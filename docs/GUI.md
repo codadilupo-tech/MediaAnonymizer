@@ -76,16 +76,18 @@ timeline:
   smooths detections over neighbouring frames). The buttons step one frame, jump to the
   previous / next keyframe or to the start / end. With the keyboard: **←** / **→** step
   one frame, **Shift+←** / **Shift+→** one second, **Home** / **End**.
-- **Add keyframe** at the playhead starts a new *section* that lasts until the next
-  keyframe or the end of the video. Before the first keyframe the settings of the left
-  panel apply.
-- For the section under the playhead you can choose:
-  - **Process** with its own face settings (mode, style, strength…), **Cover faces**
-    turned off to leave faces visible in that part, and the timestamp shown or hidden;
-  - **Cut from the output**: those frames and the matching audio are removed.
-- **Delete keyframe** merges the section into the previous one; **Move keyframe here**
-  moves its start to the playhead; diamonds above the timeline mark keyframes (click one to
-  jump to it).
+- **Add keyframe** (the diamond-plus button, or **K**) at the playhead starts a new
+  *section* that lasts until the next keyframe or the end of the video, with the settings
+  in effect there. Before the first keyframe the global settings apply.
+- While the playhead is in a section, the left panel shows **This section**: choose
+  **Process** or **Cut from the output** (those frames and the matching audio are
+  removed), the face settings (mode, style, strength…, or **Detect and cover faces**
+  turned off to leave faces visible in that part) and whether the timestamp is shown.
+  **Reset to global** copies the global settings into the section; the **Global** tab
+  edits the settings shared by every file.
+- Diamonds above the timeline mark keyframes: click one to jump to it, drag it to move
+  it, right-click it to delete it (the previous section then extends over it). On a
+  keyframe, the same button (or **K** / **Delete**) removes it.
 - Sections are coloured: global settings, section settings, faces not covered, and cut
   (red, hatched). The queue row shows how many keyframes a video has.
 
@@ -154,5 +156,5 @@ DISPLAY=:99 LIBGL_ALWAYS_SOFTWARE=1 MEDIAANON_GUI_AUTOSTART=1 \
 | `crates/gui/src/queue.rs` | Queue items, status, folder scanning. |
 | `crates/gui/src/worker.rs` | Background batch processing with throttled progress and cancellation. |
 | `crates/gui/src/preview.rs` | Debounced background preview rendering (photos and video frames), zoom and pan, sample photo. |
-| `crates/gui/src/timeline.rs` | Video timeline: scrubber, keyframes, section editor, faces left visible. |
+| `crates/gui/src/timeline.rs` | Video timeline: scrubber, keyframes (add, move, delete), faces left visible. |
 | `crates/gui/assets/sample.jpg` | Sample photo for the preview (NASA, public domain; see `assets/README.md`). |

@@ -1,9 +1,9 @@
-//! Video timeline: a scrubber to pick the previewed frame, keyframes that
-//! start sections with their own settings, and the editor of the section
-//! under the playhead.
+//! Video timeline: a scrubber to pick the previewed frame, and keyframes that
+//! start sections with their own settings. The settings of the section under
+//! the playhead are edited in the left panel (see [`current_section`]).
 
 use crate::queue::Item;
-use crate::settings::{self, Settings};
+use crate::settings::Settings;
 use eframe::egui::{self, Color32, Pos2, Rect, Sense, Stroke, Vec2};
 use mediaanon_core::{Keyframe, Options, Timeline, VideoInfo};
 
@@ -49,6 +49,11 @@ impl Clock {
         Self { fps, last: (frames - 1) as f64 / fps }
     }
 
+    /// Half a frame: times closer than this are the same frame.
+    fn epsilon(&self) -> f64 {
+        0.5 / self.fps
+    }
+
     fn frame(&self, t: f64) -> u64 {
         (t.max(0.0) * self.fps).round() as u64
     }
@@ -71,6 +76,42 @@ fn section_color(k: Option<&Keyframe>) -> Color32 {
         Some(k) if k.faces.is_none() => NO_FACES,
         Some(_) => CUSTOM,
     }
+}
+
+/// The keyframe section under the playhead of a video: its index and time
+/// range. `None` before the first keyframe (global settings) or while the
+/// video information is unknown.
+pub fn current_section(item: &Item) -> Option<(usize, String)> {
+    let Some(Ok(info)) = &item.info else { return None };
+    let clock = Clock::new(info);
+    let index = item.edits.timeline.index_at(clock.snap(item.position) + clock.epsilon())?;
+    let keys = item.edits.timeline.keyframes();
+    let end = keys.get(index + 1).map_or(clock.length(), |k| k.time);
+    Some((index, format!("{} – {}", format_time(keys[index].time), format_time(end))))
+}
+
+/// Index of the keyframe exactly at the playhead.
+fn key_at_playhead(item: &Item, clock: &Clock) -> Option<usize> {
+    let pos = item.position;
+    let i = item.edits.timeline.index_at(pos + clock.epsilon())?;
+    ((item.edits.timeline.keyframes()[i].time - pos).abs() <= clock.epsilon()).then_some(i)
+}
+
+/// Adds a keyframe at the playhead, or removes the one there. A new keyframe
+/// starts with the settings in effect (including the face options of a cut
+/// section, ready if it is switched back), to be changed in the left panel.
+fn toggle_keyframe(item: &mut Item, clock: &Clock, global: &Options) {
+    if let Some(i) = key_at_playhead(item, clock) {
+        item.edits.timeline.remove(i);
+        return;
+    }
+    let pos = item.position;
+    let timeline = &mut item.edits.timeline;
+    let keyframe = match timeline.index_at(pos + clock.epsilon()) {
+        Some(i) => Keyframe { time: pos, ..timeline.keyframes()[i].clone() },
+        None => Keyframe::from_options(pos, global),
+    };
+    timeline.insert(keyframe, clock.epsilon());
 }
 
 /// Draws the timeline of a video item. `tracking` is the progress of a
@@ -105,14 +146,13 @@ pub fn show(ui: &mut egui::Ui, item: &mut Item, settings: &Settings, tracking: O
         })
         .collect();
 
-    transport(ui, item, &clock);
+    transport(ui, item, &clock, &global);
     track(ui, item, &clock, &spans);
     legend(ui);
+    section_bar(ui, item, &clock);
     ui.separator();
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
         visible_faces(ui, item, &spans, tracking, error.as_deref());
-        ui.separator();
-        section_editor(ui, item, &clock, settings, &global);
     });
 }
 
@@ -168,10 +208,13 @@ fn visible_faces(ui: &mut egui::Ui, item: &mut Item, spans: &[MarkSpan], trackin
     ui.weak("Scrub through the video to check: a lost face is covered again; click it to add a new mark.");
 }
 
-/// Frame stepping, keyframe navigation and the time readout.
-fn transport(ui: &mut egui::Ui, item: &mut Item, clock: &Clock) {
+/// Frame stepping, keyframe navigation, the time readout and the keyframe
+/// toggle.
+fn transport(ui: &mut egui::Ui, item: &mut Item, clock: &Clock, global: &Options) {
     let step = 1.0 / clock.fps;
     let mut target = None;
+    let mut toggle = false;
+    let on_key = key_at_playhead(item, clock).is_some();
     ui.horizontal(|ui| {
         let keys: Vec<f64> = item.edits.timeline.keyframes().iter().map(|k| k.time).collect();
         let pos = item.position;
@@ -197,6 +240,13 @@ fn transport(ui: &mut egui::Ui, item: &mut Item, clock: &Clock) {
         if icon_button(ui, Icon::End, true, "End (End)") {
             target = Some(clock.last);
         }
+        ui.separator();
+        let (icon, hint) = if on_key {
+            (Icon::RemoveKey, "Remove the keyframe at the playhead (K or Delete)")
+        } else {
+            (Icon::AddKey, "Add a keyframe at the playhead (K): a new section starts here")
+        };
+        toggle |= icon_button(ui, icon, true, hint);
     });
 
     // Keyboard, unless a text field has the focus.
@@ -215,7 +265,15 @@ fn transport(ui: &mut egui::Ui, item: &mut Item, clock: &Clock) {
             if i.key_pressed(egui::Key::End) {
                 target = Some(clock.last);
             }
+            if i.key_pressed(egui::Key::K)
+                || (on_key && (i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace)))
+            {
+                toggle = true;
+            }
         });
+    }
+    if toggle {
+        toggle_keyframe(item, clock, global);
     }
     if let Some(t) = target {
         item.position = clock.snap(t.clamp(0.0, clock.last));
@@ -231,6 +289,8 @@ enum Icon {
     NextFrame,
     NextKey,
     End,
+    AddKey,
+    RemoveKey,
 }
 
 /// A small button with a drawn icon; returns whether it was clicked.
@@ -263,9 +323,30 @@ fn icon_button(ui: &mut egui::Ui, icon: Icon, enabled: bool, hint: &str) -> bool
         Icon::NextFrame => vec![triangle(c.x, 1.0)],
         Icon::NextKey => vec![triangle(c.x - 4.0, 1.0), diamond(c.x + 5.0)],
         Icon::End => vec![triangle(c.x - 1.0, 1.0), bar(c.x + 5.0)],
+        Icon::AddKey | Icon::RemoveKey => {
+            let mut v = vec![diamond(c.x - 4.0)];
+            let s = Stroke::new(1.5, color);
+            let (x, y) = (c.x + 5.0, c.y);
+            if icon == Icon::AddKey {
+                v.push(egui::Shape::line_segment([Pos2::new(x - 3.0, y), Pos2::new(x + 3.0, y)], s));
+                v.push(egui::Shape::line_segment([Pos2::new(x, y - 3.0), Pos2::new(x, y + 3.0)], s));
+            } else {
+                v.push(egui::Shape::line_segment([Pos2::new(x - 2.5, y - 2.5), Pos2::new(x + 2.5, y + 2.5)], s));
+                v.push(egui::Shape::line_segment([Pos2::new(x - 2.5, y + 2.5), Pos2::new(x + 2.5, y - 2.5)], s));
+            }
+            v
+        }
     };
     painter.extend(shapes);
     resp.clicked()
+}
+
+/// What the user did to a keyframe marker.
+enum KeyAction {
+    GoTo(f64),
+    /// Index, new time (kept between the neighbours, so the order holds).
+    Move(usize, f64),
+    Delete(usize),
 }
 
 /// The scrubber: sections, keyframe markers and the playhead.
@@ -279,7 +360,7 @@ fn track(ui: &mut egui::Ui, item: &mut Item, clock: &Clock, spans: &[MarkSpan]) 
     let x_of = |t: f64| bar.left() + (t / length).clamp(0.0, 1.0) as f32 * bar.width();
     let t_of = |x: f32| ((x - bar.left()) / bar.width()).clamp(0.0, 1.0) as f64 * length;
     let painter = ui.painter_at(rect.expand(2.0));
-    let visuals = ui.visuals();
+    let visuals = ui.visuals().clone();
 
     // Sections.
     let keys = item.edits.timeline.keyframes();
@@ -303,21 +384,55 @@ fn track(ui: &mut egui::Ui, item: &mut Item, clock: &Clock, spans: &[MarkSpan]) 
     painter.rect_stroke(bar, 2.0, visuals.widgets.noninteractive.bg_stroke, egui::StrokeKind::Inside);
 
     // Keyframe markers; the one starting the current section is highlighted.
-    let current = item.edits.timeline.index_at(item.position + 0.5 / clock.fps);
-    let mut clicked_key = None;
+    // Each one can be clicked (jump to it), dragged (move it between its
+    // neighbours) or right-clicked (delete it).
+    let current = item.edits.timeline.index_at(item.position + clock.epsilon());
+    let step = 1.0 / clock.fps;
+    let mut action = None;
     let pointer = resp.interact_pointer_pos().or(resp.hover_pos());
     for (i, k) in keys.iter().enumerate() {
         let x = x_of(k.time);
         let c = Pos2::new(x, rect.top() + MARKER_ROW / 2.0);
-        let r = 5.0;
+        let hit = Rect::from_center_size(c, Vec2::new(12.0, MARKER_ROW + 2.0));
+        let marker = ui
+            .interact(hit, resp.id.with(("keyframe", i)), Sense::click_and_drag())
+            .on_hover_cursor(egui::CursorIcon::Grab);
+        let r = if marker.hovered() || marker.dragged() { 6.5 } else { 5.0 };
         let diamond =
             vec![c + Vec2::new(0.0, -r), c + Vec2::new(r, 0.0), c + Vec2::new(0.0, r), c + Vec2::new(-r, 0.0)];
         let fill =
             if Some(i) == current { visuals.selection.bg_fill } else { visuals.widgets.inactive.fg_stroke.color };
         painter.add(egui::Shape::convex_polygon(diamond, fill, Stroke::new(1.0, visuals.extreme_bg_color)));
         painter.line_segment([Pos2::new(x, bar.top()), Pos2::new(x, bar.bottom())], Stroke::new(1.0, fill));
-        if resp.clicked() && pointer.is_some_and(|p| p.y < bar.top() && (p.x - x).abs() <= r + 2.0) {
-            clicked_key = Some(k.time);
+
+        if marker.dragged() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+            if let Some(p) = marker.interact_pointer_pos() {
+                let lo = if i == 0 { 0.0 } else { keys[i - 1].time + step };
+                let hi = keys.get(i + 1).map_or(clock.last, |n| n.time - step);
+                if lo <= hi {
+                    action = Some(KeyAction::Move(i, clock.snap(t_of(p.x)).clamp(lo, hi)));
+                }
+            }
+        } else if marker.clicked() {
+            action = Some(KeyAction::GoTo(k.time));
+        }
+        marker.context_menu(|ui| {
+            ui.weak(format!("Keyframe at {}", format_time(k.time)));
+            if ui.button("Go to").clicked() {
+                action = Some(KeyAction::GoTo(k.time));
+                ui.close();
+            }
+            if ui.button("Delete keyframe").on_hover_text("The previous section extends over this one").clicked() {
+                action = Some(KeyAction::Delete(i));
+                ui.close();
+            }
+        });
+        if !marker.dragged() {
+            marker.on_hover_text(format!(
+                "Keyframe at {}\nClick to go to it, drag to move it, right-click to delete it",
+                format_time(k.time)
+            ));
         }
     }
 
@@ -338,8 +453,20 @@ fn track(ui: &mut egui::Ui, item: &mut Item, clock: &Clock, spans: &[MarkSpan]) 
     let head = visuals.strong_text_color();
     painter.line_segment([Pos2::new(x, rect.top()), Pos2::new(x, bar.bottom() + 3.0)], Stroke::new(2.0, head));
 
-    if let Some(t) = clicked_key {
-        item.position = t;
+    if let Some(a) = action {
+        match a {
+            KeyAction::GoTo(t) => item.position = t,
+            KeyAction::Delete(i) => {
+                item.edits.timeline.remove(i);
+            }
+            KeyAction::Move(i, t) => {
+                if let Some(k) = item.edits.timeline.get_mut(i) {
+                    k.time = t;
+                }
+                // Follow the keyframe, to see the frame it now starts on.
+                item.position = t;
+            }
+        }
     } else if resp.dragged() || resp.clicked() {
         if let Some(p) = pointer {
             item.position = clock.snap(t_of(p.x));
@@ -368,94 +495,37 @@ fn legend(ui: &mut egui::Ui) {
     });
 }
 
-/// Settings of the section under the playhead, and keyframe actions.
-fn section_editor(ui: &mut egui::Ui, item: &mut Item, clock: &Clock, settings: &Settings, global: &Options) {
-    let epsilon = 0.5 / clock.fps;
-    let pos = item.position;
-    let current = item.edits.timeline.index_at(pos + epsilon);
-    let keys = item.edits.timeline.keyframes();
-    let start = current.map_or(0.0, |i| keys[i].time);
-    let end = current.map_or_else(|| keys.first().map(|k| k.time), |i| keys.get(i + 1).map(|k| k.time));
-    let on_key = current.is_some_and(|i| (keys[i].time - pos).abs() <= epsilon);
-    let range = format!("{} – {}", format_time(start), end.map_or("end".into(), format_time));
-
+/// Which section is under the playhead, where its settings are edited, and
+/// how to manage keyframes.
+fn section_bar(ui: &mut egui::Ui, item: &mut Item, clock: &Clock) {
+    let mut clear = false;
     ui.horizontal_wrapped(|ui| {
-        ui.strong(match current {
-            None => format!("Section {range}: global settings"),
-            Some(_) => format!("Section {range}"),
-        });
-        if !on_key {
-            let add = ui
-                .button(format!("Add keyframe at {}", format_time(pos)))
-                .on_hover_text("Start a new section here, with the settings currently in effect; change them below");
-            if add.clicked() {
-                // Same settings as the current section (including the face
-                // options of a cut section, ready if it is switched back).
-                let keyframe = match current {
-                    Some(i) => Keyframe { time: pos, ..item.edits.timeline.keyframes()[i].clone() },
-                    None => Keyframe::from_options(pos, global),
-                };
-                item.edits.timeline.insert(keyframe, epsilon);
+        match current_section(item) {
+            None => {
+                let end = item.edits.timeline.keyframes().first().map_or(clock.length(), |k| k.time);
+                ui.strong(format!("Section {} – {}", format_time(0.0), format_time(end)));
+                ui.weak("global settings");
+            }
+            Some((_, range)) => {
+                ui.strong(format!("Section {range}"));
+                ui.weak("settings in the left panel");
             }
         }
-    });
-
-    let Some(index) = item.edits.timeline.index_at(pos + epsilon) else {
-        ui.weak("Before the first keyframe the settings of the left panel apply. Add a keyframe to change them from a point of the video, or to cut a part out.");
-        clear_all(ui, &mut item.edits.timeline);
-        return;
-    };
-
-    let mut delete = false;
-    let mut move_here = false;
-    ui.horizontal_wrapped(|ui| {
-        if ui.button("Delete keyframe").on_hover_text("The previous section extends over this one").clicked() {
-            delete = true;
-        }
-        if !on_key && ui.button("Move keyframe here").clicked() {
-            move_here = true;
+        let n = item.edits.timeline.keyframes().len();
+        if n > 0 {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let label = format!("Remove all {n} keyframe{}", if n == 1 { "" } else { "s" });
+                clear = ui.small_button(label).clicked();
+            });
         }
     });
-
-    let k = item.edits.timeline.get_mut(index).expect("keyframe index");
-    ui.horizontal(|ui| {
-        ui.radio_value(&mut k.cut, false, "Process");
-        ui.radio_value(&mut k.cut, true, "Cut from the output")
-            .on_hover_text("Removes these frames and the matching audio from the output");
+    ui.weak(if item.edits.timeline.is_empty() {
+        "Add a keyframe (K) to change the settings from a point of the video, or to cut a part out."
+    } else {
+        "Drag a keyframe to move it; right-click it, or press Delete on it, to remove it."
     });
-    if !k.cut {
-        let mut cover = k.faces.is_some();
-        ui.checkbox(&mut cover, "Cover faces");
-        if cover != k.faces.is_some() {
-            k.faces = cover.then(|| settings.face.clone());
-        }
-        if let Some(f) = &mut k.faces {
-            ui.indent("keyframe-faces", |ui| settings::face_controls(ui, f, "keyframe"));
-        }
-        ui.add_enabled_ui(settings.timestamp_enabled, |ui| {
-            ui.checkbox(&mut k.timestamp, "Show the timestamp")
-                .on_disabled_hover_text("Enable the timestamp in the left panel first");
-        });
-    }
-
-    if delete {
-        item.edits.timeline.remove(index);
-    } else if move_here {
-        if let Some(mut k) = item.edits.timeline.remove(index) {
-            k.time = pos;
-            item.edits.timeline.insert(k, epsilon);
-        }
-    }
-    clear_all(ui, &mut item.edits.timeline);
-}
-
-fn clear_all(ui: &mut egui::Ui, timeline: &mut Timeline) {
-    if timeline.is_empty() {
-        return;
-    }
-    ui.add_space(6.0);
-    if ui.small_button(format!("Remove all {} keyframes", timeline.keyframes().len())).clicked() {
-        *timeline = Timeline::default();
+    if clear {
+        item.edits.timeline = Timeline::default();
     }
 }
 

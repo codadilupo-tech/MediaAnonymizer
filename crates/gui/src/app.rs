@@ -50,6 +50,12 @@ pub struct App {
     track_rx: Receiver<TrackResult>,
     /// Debounce: tracking key wanted and since when.
     track_wanted: Option<(TrackKey, Instant)>,
+    /// The left panel shows the global settings although the playhead of
+    /// the selected video is in a keyframe section.
+    section_global: bool,
+    /// Section under the playhead (video, keyframe index, keyframe count):
+    /// entering another section shows its settings again.
+    section_seen: Option<(PathBuf, usize, usize)>,
 }
 
 /// What a tracking pass depends on.
@@ -100,6 +106,8 @@ impl App {
             track_tx,
             track_rx,
             track_wanted: None,
+            section_global: false,
+            section_seen: None,
         }
     }
 
@@ -642,8 +650,32 @@ impl eframe::App for App {
                 ui.small("· Black band is irreversible; blur and pixelate can be weaker at low strength.");
             });
         });
+        // Inside a keyframe section of the selected video, the left panel
+        // edits that section.
+        let section = self
+            .selected
+            .filter(|&i| self.queue.items.get(i).is_some_and(|i| i.is_video()))
+            .and_then(|i| crate::timeline::current_section(&self.queue.items[i]).map(|s| (i, s)));
+        let seen = section.as_ref().map(|(i, (k, _))| {
+            let item = &self.queue.items[*i];
+            (item.path.clone(), *k, item.edits.timeline.keyframes().len())
+        });
+        if seen != self.section_seen {
+            self.section_seen = seen;
+            self.section_global = false;
+        }
+        let before_keyframes = section.is_none()
+            && self
+                .selected
+                .and_then(|i| self.queue.items.get(i))
+                .is_some_and(|i| i.is_video() && matches!(i.info, Some(Ok(_))) && !i.edits.timeline.is_empty());
+        let running = self.running();
+        let edit = section.and_then(|(i, (k, range))| {
+            let keyframe = self.queue.items[i].edits.timeline.get_mut(k)?;
+            Some(settings::SectionEdit { keyframe, range, global: &mut self.section_global })
+        });
         egui::Panel::left("settings").resizable(true).default_size(310.0).show(ui, |ui| {
-            ui.add_enabled_ui(!self.running(), |ui| settings::show(ui, &mut self.settings, &self.env));
+            ui.add_enabled_ui(!running, |ui| settings::show(ui, &mut self.settings, &self.env, edit, before_keyframes));
         });
         let video = self.selected.filter(|&i| self.queue.items.get(i).is_some_and(|i| i.is_video()));
         let tracking = video.and_then(|i| self.tracking_progress(&self.queue.items[i].path));

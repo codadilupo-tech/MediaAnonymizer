@@ -6,6 +6,14 @@ All notable changes are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- GUI: the settings of the video section under the playhead are edited in the
+  left panel (**This section** / **Global** tabs) instead of a second editor
+  under the timeline. Keyframes are added or removed with one button (**K**),
+  dragged to move them and deleted from their right-click menu (or
+  **Delete**).
+
 ### Added
 
 - `mediaanon-core` library, `mediaanon` CLI and `mediaanon-gui` desktop app.

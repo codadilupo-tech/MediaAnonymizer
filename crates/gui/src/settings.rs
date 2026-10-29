@@ -2,8 +2,8 @@
 
 use eframe::egui;
 use mediaanon_core::{
-    Corner, DeviceInfo, EncoderBackend, FaceMode, FaceOptions, FaceShape, HwAccel, InferenceDevice, MetadataPolicy,
-    Options, RedactionStyle, TimestampOptions, VideoQuality,
+    Corner, DeviceInfo, EncoderBackend, FaceMode, FaceOptions, FaceShape, HwAccel, InferenceDevice, Keyframe,
+    MetadataPolicy, Options, RedactionStyle, TimestampOptions, VideoQuality,
 };
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -255,7 +255,7 @@ fn corner_label(c: Corner) -> &'static str {
 
 /// Controls for one set of face options; `salt` keeps the widget ids of
 /// several instances apart.
-pub fn face_controls(ui: &mut egui::Ui, f: &mut FaceOptions, salt: &str) {
+fn face_controls(ui: &mut egui::Ui, f: &mut FaceOptions, salt: &str) {
     let id = |name: &str| format!("{salt}-{name}");
     combo(ui, &id("mode"), "Mode", &mut f.mode, FaceMode::ALL, |v| mode_label(v).into(), |_| None);
     combo(ui, &id("style"), "Style", &mut f.style, RedactionStyle::ALL, |v| style_label(v).into(), |_| None);
@@ -289,125 +289,211 @@ pub fn face_controls(ui: &mut egui::Ui, f: &mut FaceOptions, salt: &str) {
     });
 }
 
-/// Draws the settings panel content.
-pub fn show(ui: &mut egui::Ui, s: &mut Settings, env: &Environment) {
+/// The section of a video under the playhead: while it is shown, the panel
+/// edits its keyframe instead of the global face and timestamp settings.
+pub struct SectionEdit<'a> {
+    pub keyframe: &'a mut Keyframe,
+    /// Time range of the section, for display.
+    pub range: String,
+    /// Whether the user switched to the global settings.
+    pub global: &'a mut bool,
+}
+
+/// Draws the settings panel content: the settings of the video section under
+/// the playhead if there is one (with a tab back to the global settings),
+/// else the global settings. `before_keyframes`: the playhead of the selected
+/// video is before its first keyframe.
+pub fn show(
+    ui: &mut egui::Ui,
+    s: &mut Settings,
+    env: &Environment,
+    section: Option<SectionEdit<'_>>,
+    before_keyframes: bool,
+) {
     egui::ScrollArea::vertical().show(ui, |ui| {
-        ui.heading("Metadata");
-        for p in MetadataPolicy::ALL {
-            ui.radio_value(&mut s.options.metadata, *p, metadata_label(*p));
-        }
-
-        ui.separator();
-        ui.heading("Faces");
-        ui.checkbox(&mut s.faces_enabled, "Detect and cover faces");
-        ui.add_enabled_ui(s.faces_enabled, |ui| {
-            face_controls(ui, &mut s.face, "global");
-        });
-
-        ui.separator();
-        ui.heading("Timestamp");
-        ui.checkbox(&mut s.timestamp_enabled, "Overlay capture date")
-            .on_hover_text("Read from EXIF / video tags before metadata removal, else the file modification time.");
-        ui.add_enabled_ui(s.timestamp_enabled, |ui| {
-            let t = &mut s.timestamp;
-            combo(ui, "corner", "Position", &mut t.position, Corner::ALL, |v| corner_label(v).into(), |_| None);
-            ui.horizontal(|ui| {
-                ui.label("Format");
-                ui.add(egui::TextEdit::singleline(&mut t.format).desired_width(150.0))
-                    .on_hover_text("%Y year, %m month, %b month name, %d day, %H:%M:%S time, %y 2-digit year");
-            });
-            slider(
-                ui,
-                &mut t.size,
-                0.015..=0.1,
-                "Text size",
-                TimestampOptions::default().size,
-                Some("Height of the text as a fraction of the picture height."),
-            );
-        });
-
-        ui.separator();
-        ui.heading("Compute");
-        let c = &mut s.options.compute;
-        combo(
-            ui,
-            "device",
-            "Inference",
-            &mut c.device,
-            InferenceDevice::ALL,
-            |v| v.to_string(),
-            |v| env.device_problem(v),
-        );
-        ui.horizontal(|ui| {
-            ui.label("GPU index");
-            ui.add(egui::DragValue::new(&mut c.gpu_index).range(0..=15));
-        });
-        ui.horizontal(|ui| {
-            let mut limit = c.threads.is_some();
-            ui.checkbox(&mut limit, "Limit threads");
-            if limit {
-                let mut t = c.threads.unwrap_or(4);
-                ui.add(egui::DragValue::new(&mut t).range(1..=256));
-                c.threads = Some(t);
-            } else {
-                c.threads = None;
-            }
-        });
-
-        ui.separator();
-        ui.heading("Video");
-        let v = &mut s.options.video;
-        combo(
-            ui,
-            "hwaccel",
-            "HW decode",
-            &mut v.hwaccel,
-            HwAccel::ALL,
-            |h| h.to_string(),
-            |h| (!env.hwaccel_available(h)).then(|| "Not supported by the installed FFmpeg".to_string()),
-        );
-        combo(ui, "encoder", "Encoder", &mut v.encoder, EncoderBackend::ALL, |e| e.to_string(), |_| None);
-        combo(ui, "quality", "Quality", &mut v.quality, VideoQuality::ALL, |q| quality_label(q).into(), |_| None);
-        ui.horizontal(|ui| {
-            ui.label("Detect every");
-            ui.add(egui::DragValue::new(&mut v.detect_every).range(1..=30).suffix(" frames"));
-        });
-        ui.horizontal(|ui| {
-            ui.label("Persistence");
-            ui.add(egui::DragValue::new(&mut v.persistence).range(0..=60).suffix(" frames"))
-                .on_hover_text("Keep each detection this many frames before and after, to cover missed frames.");
-        });
-
-        ui.separator();
-        ui.heading("Output");
-        ui.horizontal(|ui| {
-            ui.radio_value(&mut s.output_mode, OutputMode::Suffix, "Next to originals, suffix");
-            ui.add_enabled(
-                s.output_mode == OutputMode::Suffix,
-                egui::TextEdit::singleline(&mut s.suffix).desired_width(60.0),
-            );
-        });
-        ui.horizontal(|ui| {
-            ui.radio_value(&mut s.output_mode, OutputMode::Folder, "To folder");
-            if ui.button("Choose…").clicked() {
-                if let Some(dir) = rfd::FileDialog::new().pick_folder() {
-                    s.folder = Some(dir);
-                    s.output_mode = OutputMode::Folder;
-                }
-            }
-        });
-        if let Some(dir) = &s.folder {
-            ui.small(dir.display().to_string());
-        }
-        let label = egui::RichText::new("Overwrite existing files").color(ui.visuals().error_fg_color);
-        ui.checkbox(&mut s.overwrite, label)
-            .on_hover_text("Files already at the output path are replaced; you are asked to confirm before starting.");
-
-        for e in &env.errors {
+        if before_keyframes {
+            ui.weak("Global settings: they apply to every file, and to this video before its first keyframe.");
             ui.separator();
-            ui.colored_label(ui.visuals().warn_fg_color, e);
+        }
+        if let Some(sec) = section {
+            ui.horizontal(|ui| {
+                ui.selectable_value(sec.global, false, "This section")
+                    .on_hover_text("Settings of the video section under the playhead");
+                ui.selectable_value(sec.global, true, "Global")
+                    .on_hover_text("Settings of every file, and of this video before its first keyframe");
+            });
+            ui.separator();
+            if !*sec.global {
+                section_settings(ui, s, sec.keyframe, &sec.range);
+                return;
+            }
+            ui.weak("These apply to every file, and to this video before its first keyframe.");
+            ui.add_space(4.0);
+        }
+        global_settings(ui, s, env);
+    });
+}
+
+/// Settings of one video section (the keyframe starting it).
+fn section_settings(ui: &mut egui::Ui, s: &Settings, k: &mut Keyframe, range: &str) {
+    ui.heading("Section");
+    ui.weak(format!("{range} · from the keyframe to the next one"));
+    ui.horizontal(|ui| {
+        ui.radio_value(&mut k.cut, false, "Process");
+        ui.radio_value(&mut k.cut, true, "Cut from the output")
+            .on_hover_text("Removes these frames and the matching audio from the output");
+    });
+    if k.cut {
+        ui.weak("These frames and the matching audio are removed from the output.");
+        return;
+    }
+    if ui
+        .small_button("Reset to global")
+        .on_hover_text("Use the global face and timestamp settings in this section")
+        .clicked()
+    {
+        k.faces = s.faces_enabled.then(|| s.face.clone());
+        k.timestamp = true;
+    }
+
+    ui.separator();
+    ui.heading("Faces");
+    let mut cover = k.faces.is_some();
+    ui.checkbox(&mut cover, "Detect and cover faces");
+    if cover != k.faces.is_some() {
+        k.faces = cover.then(|| s.face.clone());
+    }
+    match &mut k.faces {
+        Some(f) => face_controls(ui, f, "section"),
+        None => {
+            ui.weak("Faces are left visible in this section.");
+        }
+    }
+
+    ui.separator();
+    ui.heading("Timestamp");
+    if s.timestamp_enabled {
+        ui.checkbox(&mut k.timestamp, "Overlay capture date");
+    } else {
+        ui.add_enabled(false, egui::Checkbox::new(&mut false, "Overlay capture date"))
+            .on_disabled_hover_text("Turn the timestamp on in the Global tab first");
+    }
+    ui.weak(if s.timestamp_enabled {
+        "Position, format and size are shared by the whole video (Global tab)."
+    } else {
+        "The timestamp is off in the Global tab."
+    });
+}
+
+/// The settings shared by every file.
+fn global_settings(ui: &mut egui::Ui, s: &mut Settings, env: &Environment) {
+    ui.heading("Metadata");
+    for p in MetadataPolicy::ALL {
+        ui.radio_value(&mut s.options.metadata, *p, metadata_label(*p));
+    }
+
+    ui.separator();
+    ui.heading("Faces");
+    ui.checkbox(&mut s.faces_enabled, "Detect and cover faces");
+    ui.add_enabled_ui(s.faces_enabled, |ui| {
+        face_controls(ui, &mut s.face, "global");
+    });
+
+    ui.separator();
+    ui.heading("Timestamp");
+    ui.checkbox(&mut s.timestamp_enabled, "Overlay capture date")
+        .on_hover_text("Read from EXIF / video tags before metadata removal, else the file modification time.");
+    ui.add_enabled_ui(s.timestamp_enabled, |ui| {
+        let t = &mut s.timestamp;
+        combo(ui, "corner", "Position", &mut t.position, Corner::ALL, |v| corner_label(v).into(), |_| None);
+        ui.horizontal(|ui| {
+            ui.label("Format");
+            ui.add(egui::TextEdit::singleline(&mut t.format).desired_width(150.0))
+                .on_hover_text("%Y year, %m month, %b month name, %d day, %H:%M:%S time, %y 2-digit year");
+        });
+        slider(
+            ui,
+            &mut t.size,
+            0.015..=0.1,
+            "Text size",
+            TimestampOptions::default().size,
+            Some("Height of the text as a fraction of the picture height."),
+        );
+    });
+
+    ui.separator();
+    ui.heading("Compute");
+    let c = &mut s.options.compute;
+    combo(ui, "device", "Inference", &mut c.device, InferenceDevice::ALL, |v| v.to_string(), |v| env.device_problem(v));
+    ui.horizontal(|ui| {
+        ui.label("GPU index");
+        ui.add(egui::DragValue::new(&mut c.gpu_index).range(0..=15));
+    });
+    ui.horizontal(|ui| {
+        let mut limit = c.threads.is_some();
+        ui.checkbox(&mut limit, "Limit threads");
+        if limit {
+            let mut t = c.threads.unwrap_or(4);
+            ui.add(egui::DragValue::new(&mut t).range(1..=256));
+            c.threads = Some(t);
+        } else {
+            c.threads = None;
         }
     });
+
+    ui.separator();
+    ui.heading("Video");
+    let v = &mut s.options.video;
+    combo(
+        ui,
+        "hwaccel",
+        "HW decode",
+        &mut v.hwaccel,
+        HwAccel::ALL,
+        |h| h.to_string(),
+        |h| (!env.hwaccel_available(h)).then(|| "Not supported by the installed FFmpeg".to_string()),
+    );
+    combo(ui, "encoder", "Encoder", &mut v.encoder, EncoderBackend::ALL, |e| e.to_string(), |_| None);
+    combo(ui, "quality", "Quality", &mut v.quality, VideoQuality::ALL, |q| quality_label(q).into(), |_| None);
+    ui.horizontal(|ui| {
+        ui.label("Detect every");
+        ui.add(egui::DragValue::new(&mut v.detect_every).range(1..=30).suffix(" frames"));
+    });
+    ui.horizontal(|ui| {
+        ui.label("Persistence");
+        ui.add(egui::DragValue::new(&mut v.persistence).range(0..=60).suffix(" frames"))
+            .on_hover_text("Keep each detection this many frames before and after, to cover missed frames.");
+    });
+
+    ui.separator();
+    ui.heading("Output");
+    ui.horizontal(|ui| {
+        ui.radio_value(&mut s.output_mode, OutputMode::Suffix, "Next to originals, suffix");
+        ui.add_enabled(
+            s.output_mode == OutputMode::Suffix,
+            egui::TextEdit::singleline(&mut s.suffix).desired_width(60.0),
+        );
+    });
+    ui.horizontal(|ui| {
+        ui.radio_value(&mut s.output_mode, OutputMode::Folder, "To folder");
+        if ui.button("Choose…").clicked() {
+            if let Some(dir) = rfd::FileDialog::new().pick_folder() {
+                s.folder = Some(dir);
+                s.output_mode = OutputMode::Folder;
+            }
+        }
+    });
+    if let Some(dir) = &s.folder {
+        ui.small(dir.display().to_string());
+    }
+    let label = egui::RichText::new("Overwrite existing files").color(ui.visuals().error_fg_color);
+    ui.checkbox(&mut s.overwrite, label)
+        .on_hover_text("Files already at the output path are replaced; you are asked to confirm before starting.");
+
+    for e in &env.errors {
+        ui.separator();
+        ui.colored_label(ui.visuals().warn_fg_color, e);
+    }
 }
 
 #[cfg(test)]
