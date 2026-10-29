@@ -1,0 +1,15 @@
+include: package:flutter_lints/flutter.yaml
+
+formatter:
+  page_width: 120
+
+linter:
+  rules:
+    - prefer_single_quotes
+    - prefer_final_locals
+    - unawaited_futures
+analyzer:
+  exclude:
+    - build/**
+    - android/**
+    - ios/**

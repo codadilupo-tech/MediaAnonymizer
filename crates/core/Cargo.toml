@@ -1,0 +1,44 @@
+[package]
+name = "mediaanon-core"
+description = "Core library of MediaAnonymizer: metadata stripping and face redaction for photos and videos"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+keywords = ["privacy", "anonymization", "exif", "face-detection", "redaction"]
+categories = ["multimedia", "multimedia::images", "multimedia::video"]
+
+[features]
+default = ["ort-download"]
+# Download a prebuilt ONNX Runtime at build time and link it (simplest for end users).
+ort-download = ["ort/download-binaries", "ort/copy-dylibs", "ort/tls-native"]
+# Load the ONNX Runtime shared library at runtime (`ORT_DYLIB_PATH` or the system search path).
+# Use this to bring your own GPU-enabled ONNX Runtime build.
+ort-dynamic = ["ort/load-dynamic"]
+
+# Inference execution providers. Each one requires an ONNX Runtime build that ships it.
+cuda = ["ort/cuda"]
+tensorrt = ["ort/tensorrt"]
+directml = ["ort/directml"]
+coreml = ["ort/coreml"]
+openvino = ["ort/openvino"]
+rocm = ["ort/rocm"]
+
+[dependencies]
+crc32fast = { workspace = true }
+bytemuck = { workspace = true }
+ab_glyph = { workspace = true }
+ort = { workspace = true }
+mozjpeg-sys = { workspace = true }
+image = { workspace = true }
+libc = { workspace = true }
+rayon = { workspace = true }
+crossbeam-channel = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

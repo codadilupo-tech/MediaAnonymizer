@@ -1,0 +1,7 @@
+# The prebuilt ONNX Runtime downloaded by `ort` for macOS is compiled for
+# macOS 13.4. Linking it into a binary that targets an older macOS (Rust's
+# default is 11.0) fails with "Undefined symbols: ___isPlatformVersionAtLeast"
+# and floods the output with "built for newer 'macOS' version" warnings.
+# Raising the deployment target fixes both; it only affects Apple targets.
+[env]
+MACOSX_DEPLOYMENT_TARGET = { value = "13.4", force = false }

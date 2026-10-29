@@ -1,0 +1,101 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One run per branch/PR: a new push cancels the previous run.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+  # Video tests must run in CI: fail instead of skipping when FFmpeg is missing.
+  MEDIAANON_REQUIRE_FFMPEG: "1"
+
+jobs:
+  fmt:
+    name: Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all --check
+
+  test:
+    name: Test (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: Linux x86_64, os: ubuntu-latest }
+          - { name: Linux arm64, os: ubuntu-24.04-arm }
+          - { name: macOS arm64, os: macos-latest }
+          - { name: Windows x86_64, os: windows-latest }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.os }}
+
+      - name: Install FFmpeg (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
+      - name: Install FFmpeg (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ffmpeg
+      - name: Install FFmpeg (Windows)
+        if: runner.os == 'Windows'
+        run: choco install ffmpeg --no-progress -y
+      - name: Tool versions
+        shell: bash
+        run: |
+          rustc --version
+          ffmpeg -hide_banner -version | head -1
+
+      # Clippy on every OS: platform-specific code (build.rs on macOS,
+      # process flags on Windows) is only compiled there.
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Test
+        run: cargo test --workspace --locked
+      - name: CLI smoke test
+        shell: bash
+        run: |
+          cargo run --release --locked -p mediaanon-cli -- devices
+          cargo run --release --locked -p mediaanon-cli -- process -v --strip-metadata --faces --timestamp \
+            -o "$RUNNER_TEMP/smoke.jpg" crates/core/tests/fixtures/astronaut_gps.jpg
+          cargo run --release --locked -p mediaanon-cli -- inspect "$RUNNER_TEMP/smoke.jpg"
+
+  msrv:
+    name: Minimum supported Rust version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.92
+      - uses: Swatinem/rust-cache@v2
+      # The GUI follows eframe's newer MSRV (1.95) and is checked by the jobs above.
+      - run: cargo check -p mediaanon-core -p mediaanon-cli -p mediaanon-mobile --all-targets --locked
+
+  docs:
+    name: Docs
+    runs-on: ubuntu-latest
+    env:
+      RUSTDOCFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo doc -p mediaanon-core --no-deps --locked

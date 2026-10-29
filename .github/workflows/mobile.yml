@@ -1,0 +1,147 @@
+name: Mobile
+
+on:
+  push:
+    paths:
+      - "mobile/**"
+      - "crates/core/**"
+      - "crates/mobile/**"
+      - "models/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/mobile.yml"
+  pull_request:
+    paths:
+      - "mobile/**"
+      - "crates/core/**"
+      - "crates/mobile/**"
+      - "models/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/mobile.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mobile-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # Keep in sync with .github/workflows/release.yml.
+  FLUTTER_VERSION: 3.47.7
+
+defaults:
+  run:
+    working-directory: mobile
+
+jobs:
+  test:
+    name: Flutter tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+      # Host build of the engine, so the tests exercise the real FFI bindings.
+      - name: Build the engine for the host
+        run: cargo build --locked -p mediaanon-mobile
+      - run: flutter pub get
+      - run: dart format --output=none --set-exit-if-changed lib test
+      - run: flutter analyze
+      - name: Test
+        run: MEDIAANON_MOBILE_LIB="$GITHUB_WORKSPACE/target/debug/libmediaanon_mobile.so" flutter test
+
+  android:
+    name: Android APK
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: android
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-ndk
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+      - name: Install the Android NDK
+        run: |
+          ndk=$(sed -n 's/.*val ndkVersion: String = "\(.*\)"/\1/p' \
+            "$FLUTTER_ROOT/packages/flutter_tools/gradle/src/main/kotlin/FlutterExtension.kt")
+          echo "NDK $ndk"
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;$ndk" > /dev/null
+      - name: Build
+        run: flutter build apk --release
+      - name: Check the packaged native libraries
+        run: |
+          apk=build/app/outputs/flutter-apk/app-release.apk
+          unzip -l "$apk" | grep -E 'lib/.*/lib(mediaanon_mobile|onnxruntime)\.so'
+          for abi in arm64-v8a armeabi-v7a x86_64; do
+            unzip -l "$apk" | grep -q "lib/$abi/libmediaanon_mobile.so"
+            unzip -l "$apk" | grep -q "lib/$abi/libonnxruntime.so"
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mediaanonymizer-android-apk
+          path: mobile/build/app/outputs/flutter-apk/app-release.apk
+          if-no-files-found: error
+
+  ios:
+    name: iOS app
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios,aarch64-apple-ios-sim
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ios
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+      # Build the engine on its own first: inside `flutter build ios` its
+      # compiler and linker output is reduced to a one-line summary.
+      - name: Build the engine
+        env:
+          PLATFORM_NAME: iphoneos
+          IPHONEOS_DEPLOYMENT_TARGET: "16.0"
+          TARGET_BUILD_DIR: ${{ runner.temp }}/engine
+          FRAMEWORKS_FOLDER_PATH: Frameworks
+        run: sh scripts/ios_embed_engine.sh
+      # Device build without signing: the Xcode phase builds and embeds the engine.
+      - name: Build
+        run: flutter build ios --release --no-codesign
+      - name: Check the embedded engine
+        run: |
+          fw=build/ios/iphoneos/Runner.app/Frameworks/MediaAnonymizerCore.framework
+          file "$fw/MediaAnonymizerCore"
+          nm -gU "$fw/MediaAnonymizerCore" | grep -E ' _mediaanon_(process|preview|inspect)$'
+          otool -L "$fw/MediaAnonymizerCore"
+      - name: Package
+        run: cd build/ios/iphoneos && zip -qry "$RUNNER_TEMP/MediaAnonymizer-ios-unsigned.zip" Runner.app
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mediaanonymizer-ios-unsigned
+          path: ${{ runner.temp }}/MediaAnonymizer-ios-unsigned.zip
+          if-no-files-found: error

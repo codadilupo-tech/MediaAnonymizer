@@ -1,0 +1,34 @@
+[package]
+name = "mediaanon-mobile"
+description = "C ABI of MediaAnonymizer for the Flutter mobile app (Android and iOS)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+publish = false
+
+[lib]
+name = "mediaanon_mobile"
+# `cdylib` is what the apps load (libmediaanon_mobile.so on Android, the
+# MediaAnonymizerCore framework on iOS); `rlib` lets the tests call it.
+crate-type = ["cdylib", "rlib"]
+
+[features]
+# Host builds (tests, Flutter tests on a desktop) download ONNX Runtime like the CLI.
+default = ["ort-download"]
+ort-download = ["mediaanon-core/ort-download"]
+# Android: libonnxruntime.so comes from the onnxruntime-android AAR and is loaded at runtime.
+ort-dynamic = ["mediaanon-core/ort-dynamic"]
+# iOS builds use neither feature: ONNX Runtime is linked statically from the
+# xcframework named by ORT_IOS_XCFWK_PATH (see mobile/scripts/build_ios.sh).
+coreml = ["mediaanon-core/coreml"]
+
+[dependencies]
+mediaanon-core = { workspace = true }
+image = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

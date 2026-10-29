@@ -1,0 +1,41 @@
+[package]
+name = "mediaanon-cli"
+description = "Command-line interface of MediaAnonymizer"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+publish = false
+
+[[bin]]
+name = "mediaanon"
+path = "src/main.rs"
+
+[features]
+default = ["ort-download"]
+ort-download = ["mediaanon-core/ort-download"]
+ort-dynamic = ["mediaanon-core/ort-dynamic"]
+cuda = ["mediaanon-core/cuda"]
+tensorrt = ["mediaanon-core/tensorrt"]
+directml = ["mediaanon-core/directml"]
+coreml = ["mediaanon-core/coreml"]
+openvino = ["mediaanon-core/openvino"]
+rocm = ["mediaanon-core/rocm"]
+
+[dependencies]
+mediaanon-core = { workspace = true }
+anyhow = { workspace = true }
+clap = { workspace = true }
+ctrlc = { workspace = true }
+indicatif = { workspace = true }
+rayon = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+walkdir = { workspace = true }
+
+[dev-dependencies]
+assert_cmd = { workspace = true }
+tempfile = { workspace = true }

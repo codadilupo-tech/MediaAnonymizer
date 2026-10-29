@@ -1,0 +1,7 @@
+# Accessory model pipeline (training only; the app does not need Python).
+torch>=2.4
+torchvision>=0.19
+onnx>=1.16
+onnxruntime>=1.18
+numpy>=1.26
+pillow>=10

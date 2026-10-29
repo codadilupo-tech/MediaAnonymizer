@@ -1,0 +1,440 @@
+# Continuous delivery: pushing a version tag (or running the workflow with a
+# tag) builds the installers for every platform and publishes a GitHub
+# Release with them.
+#
+# The release is created as a *draft*, the files are attached, and only then
+# is it published. This is required with immutable releases (a repository
+# setting): a published release can no longer receive assets. A draft you
+# prepared yourself for the tag (with your own notes) is used as is.
+#
+#   macOS    MediaAnonymizer-<v>-macos-arm64.dmg      (.app, Apple silicon)
+#            mediaanon-<v>-macos-arm64.tar.gz          (CLI)
+#            (ort ships no prebuilt ONNX Runtime for Intel Macs.)
+#   Windows  MediaAnonymizer-<v>-windows-x64-setup.exe (installer)
+#            MediaAnonymizer-<v>-windows-x64.zip       (portable)
+#   Linux    MediaAnonymizer-<v>-linux-{x86_64,arm64}.tar.gz
+#   Android  MediaAnonymizer-<v>-android.apk          (arm64, armv7, x86_64)
+#   iOS      MediaAnonymizer-<v>-ios-unsigned.ipa      (re-sign to install)
+#   SHA256SUMS.txt
+#
+# macOS signing/notarization is optional: without the secrets below the app is
+# ad-hoc signed (users have to allow it once, see docs/RELEASING.md).
+#   MACOS_CERTIFICATE           base64 of a "Developer ID Application" .p12
+#   MACOS_CERTIFICATE_PASSWORD  its password
+#   APPLE_ID, APPLE_TEAM_ID, APPLE_APP_PASSWORD   for notarization
+#
+# Android signing is optional too: without these secrets the APK is signed
+# with a debug key (fine for sideloading, not for Google Play).
+#   ANDROID_KEYSTORE            base64 of the upload/release keystore (.jks)
+#   ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS, ANDROID_KEY_PASSWORD
+#
+# Releases are anonymous: no file may name the maintainer. Every asset is
+# scanned (scripts/check_release_anonymity.py) for the repository owner's name
+# and for the strings in this optional secret, one per line (real name,
+# e-mail, other handles); a match stops the release before anything is published.
+#   RELEASE_FORBIDDEN_STRINGS
+# Release notes come from CHANGELOG.md, not from the pull requests (which
+# would list their authors).
+
+name: Release
+
+on:
+  push:
+    # Releases. (Path filters do not apply to tag pushes.)
+    tags: ["v*"]
+    # Dry run: changes to the packaging build every installer (as workflow
+    # artifacts) without publishing anything.
+    branches: ["**"]
+    paths: [".github/workflows/release.yml", "packaging/**", "scripts/check_release_anonymity.py"]
+  pull_request:
+    paths: [".github/workflows/release.yml", "packaging/**", "scripts/check_release_anonymity.py"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: >-
+          Release tag, e.g. v0.2.0. If the tag does not exist yet it is created
+          on the selected branch when the release is published.
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  # Keep in sync with .github/workflows/mobile.yml.
+  FLUTTER_VERSION: 3.47.7
+  # Empty for dry runs.
+  TAG: ${{ github.ref_type == 'tag' && github.ref_name || inputs.tag }}
+  # Strings no release file may contain (see the top of this file).
+  MEDIAANON_FORBIDDEN: "${{ github.repository_owner }}\n${{ secrets.RELEASE_FORBIDDEN_STRINGS }}"
+
+jobs:
+  version:
+    name: Resolve version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      # Commit to build: the tag's if it exists, else the triggering commit.
+      sha: ${{ steps.v.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: v
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          sha=$GITHUB_SHA
+          if [ -n "$TAG" ] && git rev-parse -q --verify "refs/tags/$TAG^{commit}" >/dev/null; then
+            sha=$(git rev-parse "refs/tags/$TAG^{commit}")
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          crate=$(git show "$sha:Cargo.toml" | grep -m1 '^version' | cut -d'"' -f2)
+          if [ -z "$TAG" ]; then
+            echo "version=$crate-dev" >> "$GITHUB_OUTPUT"
+            echo "::notice::dry run: building $crate-dev, nothing will be published"
+            exit 0
+          fi
+          version="${TAG#v}"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if [ "$crate" != "$version" ]; then
+            echo "::warning::release tag $TAG does not match the workspace version $crate in Cargo.toml"
+          fi
+          # Fail now rather than after the builds: assets can only be added
+          # to a draft (published releases may be immutable).
+          if [ "$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft 2>/dev/null)" = "false" ]; then
+            echo "::error::release $TAG is already published, so no assets can be attached to it." \
+              "Push the tag (or run this workflow) without publishing a release first, or save the release as a draft."
+            exit 1
+          fi
+
+  linux:
+    name: Linux (${{ matrix.arch }})
+    needs: version
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - { os: ubuntu-latest, arch: x86_64 }
+          - { os: ubuntu-24.04-arm, arch: arm64 }
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.sha }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release --locked -p mediaanon-cli -p mediaanon-gui
+      - name: Package
+        run: |
+          NAME="MediaAnonymizer-${{ needs.version.outputs.version }}-linux-${{ matrix.arch }}"
+          mkdir -p "$NAME"
+          cp target/release/mediaanon target/release/mediaanon-gui "$NAME"/
+          cp target/release/*onnxruntime*.so* "$NAME"/ 2>/dev/null || true
+          cp packaging/icons/icon.png "$NAME"/mediaanonymizer.png
+          cp README.md LICENSE-MIT LICENSE-APACHE CHANGELOG.md models/LICENSE-YuNet crates/core/assets/LICENSE-Hack.txt "$NAME"/
+          tar czf "$NAME.tar.gz" "$NAME"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-${{ matrix.arch }}
+          path: "*.tar.gz"
+
+  macos:
+    name: macOS (Apple silicon)
+    needs: version
+    runs-on: macos-latest
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      HAS_CERT: ${{ secrets.MACOS_CERTIFICATE != '' }}
+      HAS_NOTARY: ${{ secrets.APPLE_APP_PASSWORD != '' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.sha }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: |
+          cargo build --release --locked -p mediaanon-cli -p mediaanon-gui \
+            --features mediaanon-cli/coreml,mediaanon-gui/coreml
+          mkdir -p dist
+          cp target/release/mediaanon target/release/mediaanon-gui dist/
+          # Shared ONNX Runtime libraries, when the build links dynamically.
+          cp target/release/*onnxruntime*.dylib dist/ 2>/dev/null || true
+          lipo -info dist/mediaanon-gui
+      - name: Assemble MediaAnonymizer.app
+        run: |
+          APP=dist/MediaAnonymizer.app
+          mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+          cp dist/mediaanon-gui dist/mediaanon "$APP/Contents/MacOS/"
+          cp dist/*.dylib "$APP/Contents/MacOS/" 2>/dev/null || true
+          sed "s/__VERSION__/$VERSION/g" packaging/macos/Info.plist > "$APP/Contents/Info.plist"
+          # Icon: .iconset from the 1024 px PNG, then .icns.
+          ICONSET=$(mktemp -d)/AppIcon.iconset
+          mkdir -p "$ICONSET"
+          for s in 16 32 128 256 512; do
+            sips -z $s $s packaging/icons/icon.png --out "$ICONSET/icon_${s}x${s}.png" >/dev/null
+            sips -z $((s*2)) $((s*2)) packaging/icons/icon.png --out "$ICONSET/icon_${s}x${s}@2x.png" >/dev/null
+          done
+          iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/AppIcon.icns"
+          cp LICENSE-MIT LICENSE-APACHE models/LICENSE-YuNet crates/core/assets/LICENSE-Hack.txt "$APP/Contents/Resources/"
+      - name: Import signing certificate
+        if: env.HAS_CERT == 'true'
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: |
+          KEYCHAIN="$RUNNER_TEMP/build.keychain-db"
+          echo "$MACOS_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p ci "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p ci "$KEYCHAIN"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k ci "$KEYCHAIN"
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+          IDENTITY=$(security find-identity -v -p codesigning "$KEYCHAIN" | grep "Developer ID Application" | head -1 | awk -F'"' '{print $2}')
+          echo "SIGN_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
+      - name: Sign
+        run: |
+          APP=dist/MediaAnonymizer.app
+          if [ -n "${SIGN_IDENTITY:-}" ]; then
+            for f in "$APP"/Contents/MacOS/*; do
+              codesign --force --timestamp --options runtime --sign "$SIGN_IDENTITY" "$f"
+            done
+            codesign --force --timestamp --options runtime --sign "$SIGN_IDENTITY" "$APP"
+            codesign --force --timestamp --options runtime --sign "$SIGN_IDENTITY" dist/mediaanon
+          else
+            echo "::notice::no signing certificate configured: ad-hoc signing"
+            codesign --force --deep --sign - "$APP"
+            codesign --force --sign - dist/mediaanon
+          fi
+          codesign --verify --deep --strict --verbose=2 "$APP"
+      - name: Create DMG
+        run: |
+          STAGE=$(mktemp -d)
+          cp -R dist/MediaAnonymizer.app "$STAGE/"
+          ln -s /Applications "$STAGE/Applications"
+          hdiutil create -volname "MediaAnonymizer $VERSION" -srcfolder "$STAGE" -ov -format UDZO \
+            "MediaAnonymizer-$VERSION-macos-arm64.dmg"
+          if [ -n "${SIGN_IDENTITY:-}" ]; then
+            codesign --force --timestamp --sign "$SIGN_IDENTITY" "MediaAnonymizer-$VERSION-macos-arm64.dmg"
+          fi
+          CLI="mediaanon-$VERSION-macos-arm64"
+          mkdir "$CLI"
+          cp dist/mediaanon README.md LICENSE-MIT LICENSE-APACHE "$CLI"/
+          cp dist/*.dylib "$CLI"/ 2>/dev/null || true
+          tar czf "$CLI.tar.gz" "$CLI"
+      # The DMG is compressed, so its contents are checked here, after signing
+      # (a Developer ID certificate carries its holder's name).
+      - name: Check that the app does not identify the maintainer
+        run: python3 scripts/check_release_anonymity.py dist "mediaanon-$VERSION-macos-arm64.tar.gz"
+      - name: Notarize
+        if: env.HAS_CERT == 'true' && env.HAS_NOTARY == 'true'
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          DMG="MediaAnonymizer-$VERSION-macos-arm64.dmg"
+          xcrun notarytool submit "$DMG" --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" \
+            --password "$APPLE_APP_PASSWORD" --wait
+          xcrun stapler staple "$DMG"
+      - name: Smoke test
+        run: |
+          dist/MediaAnonymizer.app/Contents/MacOS/mediaanon --version
+          dist/MediaAnonymizer.app/Contents/MacOS/mediaanon process --strip-metadata --faces \
+            -o "$RUNNER_TEMP/smoke.jpg" crates/core/tests/fixtures/astronaut_gps.jpg
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: |
+            *.dmg
+            *.tar.gz
+
+  windows:
+    name: Windows (x64)
+    needs: version
+    runs-on: windows-latest
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.sha }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: cargo build --release --locked -p mediaanon-cli -p mediaanon-gui --features mediaanon-cli/directml,mediaanon-gui/directml
+      - name: Smoke test
+        run: |
+          target\release\mediaanon.exe --version
+          target\release\mediaanon.exe process --strip-metadata --faces -o "$env:RUNNER_TEMP\smoke.jpg" crates\core\tests\fixtures\astronaut_gps.jpg
+      - name: Portable zip
+        shell: pwsh
+        run: |
+          $name = "MediaAnonymizer-$env:VERSION-windows-x64"
+          New-Item -ItemType Directory $name | Out-Null
+          Copy-Item target\release\mediaanon.exe, target\release\mediaanon-gui.exe $name
+          Get-ChildItem target\release\*.dll -ErrorAction SilentlyContinue | Copy-Item -Destination $name
+          Copy-Item README.md, LICENSE-MIT, LICENSE-APACHE, CHANGELOG.md, models\LICENSE-YuNet, crates\core\assets\LICENSE-Hack.txt $name
+          Compress-Archive -Path $name -DestinationPath "$name.zip"
+      - name: Installer
+        shell: pwsh
+        run: |
+          choco install innosetup --no-progress -y
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=$env:VERSION" `
+            "/DSourceDir=$PWD\target\release" "/DOutputDir=$PWD" packaging\windows\MediaAnonymizer.iss
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: |
+            *.zip
+            *-setup.exe
+
+  android:
+    name: Android
+    needs: version
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      HAS_KEYSTORE: ${{ secrets.ANDROID_KEYSTORE != '' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.sha }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: android
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-ndk
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+      - name: Install the Android NDK
+        run: |
+          ndk=$(sed -n 's/.*val ndkVersion: String = "\(.*\)"/\1/p' \
+            "$FLUTTER_ROOT/packages/flutter_tools/gradle/src/main/kotlin/FlutterExtension.kt")
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;$ndk" > /dev/null
+      - name: Release keystore
+        if: env.HAS_KEYSTORE == 'true'
+        env:
+          ANDROID_KEYSTORE: ${{ secrets.ANDROID_KEYSTORE }}
+        run: |
+          echo "$ANDROID_KEYSTORE" | base64 --decode > "$RUNNER_TEMP/release.jks"
+          echo "MEDIAANON_KEYSTORE=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
+      - name: Build
+        working-directory: mobile
+        env:
+          MEDIAANON_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          MEDIAANON_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          MEDIAANON_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          [ "$HAS_KEYSTORE" = true ] || echo "::notice::no Android keystore configured: the APK is signed with a debug key"
+          flutter build apk --release --build-name "${VERSION%%-*}" --build-number "$GITHUB_RUN_NUMBER"
+          cp build/app/outputs/flutter-apk/app-release.apk "../MediaAnonymizer-$VERSION-android.apk"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android
+          path: "*.apk"
+          if-no-files-found: error
+
+  ios:
+    name: iOS
+    needs: version
+    runs-on: macos-latest
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.sha }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios,aarch64-apple-ios-sim
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ios
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+      # Unsigned: App Store / TestFlight builds need the team's certificates
+      # and provisioning profiles (`flutter build ipa`, see docs/MOBILE.md).
+      - name: Build
+        working-directory: mobile
+        run: |
+          flutter build ios --release --no-codesign --build-name "${VERSION%%-*}" --build-number "$GITHUB_RUN_NUMBER"
+          mkdir -p "$RUNNER_TEMP/ipa/Payload"
+          cp -R build/ios/iphoneos/Runner.app "$RUNNER_TEMP/ipa/Payload/"
+          (cd "$RUNNER_TEMP/ipa" && zip -qry "$GITHUB_WORKSPACE/MediaAnonymizer-$VERSION-ios-unsigned.ipa" Payload)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ios
+          path: "*.ipa"
+          if-no-files-found: error
+
+  anonymity:
+    name: Check that no file identifies the maintainer
+    needs: [linux, macos, windows, android, ios]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: scripts/check_release_anonymity.py
+          sparse-checkout-cone-mode: false
+      - uses: actions/download-artifact@v4
+        with:
+          path: assets
+          merge-multiple: true
+      - run: python3 scripts/check_release_anonymity.py assets
+
+  publish:
+    name: Publish the release
+    needs: [version, anonymity]
+    if: github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.sha }}
+          sparse-checkout: CHANGELOG.md
+          sparse-checkout-cone-mode: false
+      - uses: actions/download-artifact@v4
+        with:
+          path: assets
+          merge-multiple: true
+      - name: Checksums
+        working-directory: assets
+        run: sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt
+      - name: Create a draft, attach the files, publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          SHA: ${{ needs.version.outputs.sha }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          # Notes: this version's CHANGELOG.md section. Not --generate-notes,
+          # which lists the pull request authors.
+          awk -v head="## [$VERSION]" '
+            /^## \[/ { if (on) exit; on = index($0, head) == 1; next }
+            on' CHANGELOG.md > "$RUNNER_TEMP/notes.md"
+          [ -s "$RUNNER_TEMP/notes.md" ] || echo "See CHANGELOG.md." > "$RUNNER_TEMP/notes.md"
+          draft=$(gh release view "$TAG" --json isDraft --jq .isDraft 2>/dev/null || echo missing)
+          case "$draft" in
+            missing) gh release create "$TAG" --draft --target "$SHA" --title "MediaAnonymizer ${TAG#v}" --notes-file "$RUNNER_TEMP/notes.md" ;;
+            true) echo "using the existing draft release $TAG" ;;
+            *) echo "::error::release $TAG is already published; assets can only be attached to a draft"; exit 1 ;;
+          esac
+          gh release upload "$TAG" assets/* --clobber
+          gh release edit "$TAG" --draft=false

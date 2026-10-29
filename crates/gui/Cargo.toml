@@ -1,0 +1,39 @@
+[package]
+name = "mediaanon-gui"
+description = "Desktop interface of MediaAnonymizer"
+version.workspace = true
+edition.workspace = true
+# eframe 0.37 requires a newer compiler than the rest of the workspace.
+rust-version = "1.95"
+license.workspace = true
+authors.workspace = true
+publish = false
+
+[[bin]]
+name = "mediaanon-gui"
+path = "src/main.rs"
+
+[features]
+default = ["ort-download"]
+ort-download = ["mediaanon-core/ort-download"]
+ort-dynamic = ["mediaanon-core/ort-dynamic"]
+cuda = ["mediaanon-core/cuda"]
+tensorrt = ["mediaanon-core/tensorrt"]
+directml = ["mediaanon-core/directml"]
+coreml = ["mediaanon-core/coreml"]
+openvino = ["mediaanon-core/openvino"]
+rocm = ["mediaanon-core/rocm"]
+
+[dependencies]
+mediaanon-core = { workspace = true }
+eframe = { workspace = true }
+rfd = { workspace = true }
+image = { workspace = true }
+rayon = { workspace = true }
+serde = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+walkdir = { workspace = true }
+
+[target.'cfg(windows)'.build-dependencies]
+winresource = { workspace = true }
