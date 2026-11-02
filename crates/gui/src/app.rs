@@ -78,6 +78,7 @@ impl App {
         let settings = cc.storage.and_then(|s| eframe::get_value(s, SETTINGS_KEY)).unwrap_or_default();
         let mut queue = Queue::default();
         queue.add_paths(files);
+        startup_edits(&mut queue);
         let selected = queue.items.iter().position(|i| i.is_image() || i.is_video());
         let (info_tx, info_rx) = channel();
         let (track_tx, track_rx) = channel();
@@ -594,6 +595,32 @@ impl App {
                 }
                 *done.lock().unwrap_or_else(|e| e.into_inner()) = true;
             });
+        }
+    }
+}
+
+/// Applies `MEDIAANON_GUI_EDITS` (a timeline file, as for the CLI's
+/// `--timeline`) and `MEDIAANON_GUI_POSITION` (playhead, in seconds) to the
+/// files given on the command line. Used to script documentation screenshots.
+fn startup_edits(queue: &mut Queue) {
+    if let Some(path) = std::env::var_os("MEDIAANON_GUI_EDITS").filter(|p| !p.is_empty()) {
+        let edits = std::fs::read_to_string(&path)
+            .map_err(|e| e.to_string())
+            .and_then(|text| serde_json::from_str::<Edits>(&text).map_err(|e| e.to_string()))
+            .and_then(|e| e.validate().map(|()| e).map_err(|e| e.to_string()));
+        match edits {
+            Ok(edits) => {
+                for item in queue.items.iter_mut().filter(|i| i.is_video() || i.is_image()) {
+                    item.edits = edits.clone();
+                }
+            }
+            Err(e) => tracing::error!("MEDIAANON_GUI_EDITS {}: {e}", PathBuf::from(path).display()),
+        }
+    }
+    let position = std::env::var("MEDIAANON_GUI_POSITION").ok().and_then(|p| p.parse::<f64>().ok());
+    if let Some(t) = position.filter(|t| t.is_finite() && *t >= 0.0) {
+        for item in queue.items.iter_mut().filter(|i| i.is_video()) {
+            item.position = t;
         }
     }
 }

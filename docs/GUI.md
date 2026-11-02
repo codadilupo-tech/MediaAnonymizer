@@ -71,6 +71,8 @@ change. Scrub through the video to check, and click a face again where it was lo
 **Video timeline**: selecting a video shows the frame under the playhead and, below it, a
 timeline:
 
+![Video timeline with keyframes](images/gui-timeline.png)
+
 - Click or drag on the timeline to pick a frame; the preview shows that frame with the
   settings of its section (the detection runs on that frame alone; the real output also
   smooths detections over neighbouring frames). The buttons step one frame, jump to the
@@ -136,14 +138,16 @@ XDG desktop portal, so no GTK development packages are needed to build.
 | --- | --- |
 | `MEDIAANON_LOG` | Log filter, for example `info` or `debug` (logs go to stderr). |
 | `MEDIAANON_GUI_AUTOSTART=1` | Start processing the queue as soon as the window opens. |
-| `MEDIAANON_GUI_SCREENSHOT=out.png` | Save a screenshot once the preview (and any auto-started run) is ready, then exit. It doesn't read or write your saved settings. It's used to produce the image above. |
+| `MEDIAANON_GUI_SCREENSHOT=out.png` | Save a screenshot once the preview (and any auto-started run) is ready, then exit. It doesn't read or write your saved settings. It's used to produce the images above. |
+| `MEDIAANON_GUI_EDITS=edits.json` | Apply this timeline file (same format as the CLI's `--timeline`) to the files given on the command line. |
+| `MEDIAANON_GUI_POSITION=seconds` | Start the playhead of the videos given on the command line at this time. |
 
-The documentation screenshot was produced headless with:
+The documentation screenshots (`docs/images/gui.png`, `docs/images/gui-timeline.png`) are
+produced by a script, which makes the demo media from files in the repository and runs
+headless under `xvfb-run` on Linux. Run it after every change to the interface:
 
 ```sh
-Xvfb :99 -screen 0 1400x900x24 &
-DISPLAY=:99 LIBGL_ALWAYS_SOFTWARE=1 MEDIAANON_GUI_AUTOSTART=1 \
-  MEDIAANON_GUI_SCREENSHOT=docs/images/gui.png mediaanon-gui demo-folder/
+scripts/gui_screenshots.sh
 ```
 
 ## Code layout

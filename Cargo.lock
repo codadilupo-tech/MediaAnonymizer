@@ -1945,6 +1945,7 @@ dependencies = [
  "rayon",
  "rfd",
  "serde",
+ "serde_json",
  "tracing",
  "tracing-subscriber",
  "walkdir",

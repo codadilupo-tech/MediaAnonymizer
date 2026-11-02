@@ -124,6 +124,9 @@ the library and the CLI. Add `--features coreml`, `cuda` or `directml` for GPU
 face detection, then choose the device under **Compute → Inference**. See
 [docs/GUI.md](docs/GUI.md) for a tour of the interface.
 
+<p align="center"><img src="docs/images/gui-timeline.png" alt="Video timeline: keyframes, a cut section, and the section settings in the left panel" width="85%"></p>
+<p align="center"><em>Video timeline: each keyframe starts a section with its own face settings, or cuts it out.</em></p>
+
 Platform prerequisites:
 
 * **macOS** 13.4 or newer: Xcode Command Line Tools (`xcode-select --install`) and, for
