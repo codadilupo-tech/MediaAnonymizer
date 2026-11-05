@@ -42,18 +42,20 @@ pub mod media;
 pub mod metadata;
 mod options;
 pub mod overlay;
+pub mod people;
 pub mod photo;
 pub mod redact;
 pub mod timeline;
 pub mod video;
 
 pub use cancel::CancelToken;
-pub use detect::{available_devices, DetectorPool, DeviceInfo, Face};
+pub use detect::{available_devices, AttributeGroup, AttributeInfo, AttributeModel, DetectorPool, DeviceInfo, Face};
 pub use edits::{Edits, FaceBox, PreviewFace, VisibleFace};
 pub use error::{Error, Result};
 pub use media::{ImageFormat, MediaKind};
 pub use metadata::Finding;
 pub use options::*;
+pub use people::{FilterMode, PeopleFilter, PeopleScan, Person, Presence};
 pub use photo::PhotoPreview;
 pub use timeline::{Keyframe, Section, Timeline};
 pub use video::{FaceTrack, FramePreview, VideoInfo};
@@ -334,6 +336,28 @@ impl Processor {
     ) -> Result<Vec<FaceTrack>> {
         edits.validate()?;
         video::track_visible(input, &self.options, edits, self.detector()?, progress, cancel)
+    }
+
+    /// Finds the people of a photo or video and classifies them with
+    /// `model`, for [`PeopleFilter`]s. Videos follow `timeline`: cut
+    /// sections and sections where faces are not covered are skipped.
+    pub fn scan_people(
+        &self,
+        input: &Path,
+        timeline: &Timeline,
+        model: &AttributeModel,
+        progress: &(dyn Fn(Progress) + Sync),
+        cancel: &CancelToken,
+    ) -> Result<PeopleScan> {
+        let detector = self.detector()?;
+        match media::detect(input)? {
+            MediaKind::Image(_) => {
+                let data = std::fs::read(input).map_err(|e| Error::io(input, e))?;
+                let faces = self.options.faces.clone().unwrap_or_default();
+                photo::scan_people(&data, &faces, detector, model)
+            }
+            MediaKind::Video => video::scan_people(input, &self.options, timeline, detector, model, progress, cancel),
+        }
     }
 }
 

@@ -95,11 +95,12 @@ Tags are matched case-insensitively by substring: `location`, `gps`, `xyz`,
 
 Every detected face is covered unless you mark it to stay visible (for
 example a public official on duty, a speaker who consented, or yourself).
-There is deliberately no automatic rule such as "leave police officers
-visible": telling who someone is from a picture is unreliable, a mistake
-exposes a member of the public, and the law has exceptions (in France, for
-instance, members of specialised units must be anonymised). The decision
-stays with the person publishing.
+Nothing is ever left visible without a decision of yours: telling who
+someone is from a picture is unreliable, a mistake exposes a member of the
+public, and the law has exceptions (in France, for instance, members of
+specialised units must be anonymised). The decision stays with the person
+publishing. The [people filter](#people-filter) can propose marks from a
+rule, which you then review.
 
 * **Photos**: a mark is a point on the face; the face containing it is left
   uncovered. A mark on no face changes nothing.
@@ -111,6 +112,35 @@ stays with the person publishing.
 * Review the result: in the desktop app, scrub through the video and check
   the green strip under the timeline, which shows where each marked face is
   left visible.
+
+### People filter
+
+The people filter (desktop app, or `--cover-only` / `--cover-except` in the
+CLI) is an *assisted* way to create the marks above from a rule such as "cover
+only the civilians" or "cover everyone except police and carabinieri". It
+needs a person attribute model that you train yourself
+([models/attributes](../models/attributes/README.md)) and it can be wrong:
+it recognises how people *look* (a uniform, a helmet), not who they are or
+their legal status.
+
+It is built so that its mistakes tend to cover too much rather than too
+little:
+
+* A person is left visible only when the model is **confident**: with
+  "cover only…", confident that they have *none* of the chosen attributes;
+  with "cover everyone except…", confident that they have *one* of them.
+  Unsure people, and faces too small to classify, stay covered.
+* The rule produces ordinary marks: each starts where the scan first saw the
+  person and ends where it last saw them (`until`), so a track cannot drift
+  onto someone else later. A face the scan did not see stays covered.
+* The marks are shown like hand-made ones (green outlines and strips in the
+  desktop app) and can be removed one by one; applying a rule again only
+  replaces the marks the filter added.
+
+Faces crossing each other remain the weak point of any tracking: review the
+result before publishing, especially where people overlap. The earlier
+remarks still hold: whether someone may be shown (and the exceptions for
+specialised units) is a legal decision that stays with the person publishing.
 
 ## Timestamp overlay
 

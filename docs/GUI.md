@@ -16,6 +16,21 @@
   the style (*Black band* / *Blur* / *Pixelate*), the shape of the full-face area, and the
   strength, padding, detection threshold and an optional detector input size.
   Double-click a slider to reset it to its default.
+- **People filter** (under *Faces*): find every person in the selected photo or video and
+  cover them by kind. **Scan people** follows each face through the video and recognises
+  its role (*Civilian*, *Police*, *Carabinieri*, *Military*) and gear (*Helmet*, *Shield*,
+  *Balaclava*, *Face mask*, *Hat or cap*, *Glasses*, *Sunglasses*), with the number of
+  people found for each (`+N?`: unsure). Then choose **Include only** (cover only people
+  who are…) or **Exclude** (cover everyone except people who are…), tick one or more
+  attributes and press **Apply to this file**: the people the rule leaves visible get
+  ordinary visible-face marks (see below), which you review in the preview and timeline.
+  Applying again replaces those marks, never the ones you added by hand. People the model is
+  unsure about always stay covered. The list under **People** shows each person's role and
+  gear (hover for the scores); for videos, click a time to jump there. The attribute model
+  is not bundled: train it with [models/attributes](../models/attributes/README.md) and pick
+  the `.onnx` file with **Choose…** (an `attributes.onnx` next to the app, or
+  `MEDIAANON_ATTRIBUTE_MODEL`, is found automatically). See
+  [PRIVACY.md](PRIVACY.md#people-filter).
 - **Timestamp**: overlay the capture date, at the bottom left or bottom right, with a
   configurable format (`%Y-%m-%d %H:%M:%S` by default) and text size. The preview shows it.
 - **Compute**: the inference device. Devices that this build or the installed ONNX Runtime
@@ -140,6 +155,8 @@ XDG desktop portal, so no GTK development packages are needed to build.
 | `MEDIAANON_GUI_AUTOSTART=1` | Start processing the queue as soon as the window opens. |
 | `MEDIAANON_GUI_SCREENSHOT=out.png` | Save a screenshot once the preview (and any auto-started run) is ready, then exit. It doesn't read or write your saved settings. It's used to produce the images above. |
 | `MEDIAANON_GUI_EDITS=edits.json` | Apply this timeline file (same format as the CLI's `--timeline`) to the files given on the command line. |
+| `MEDIAANON_ATTRIBUTE_MODEL=attributes.onnx` | Attribute model of the people filter, unless one is chosen in the app. |
+| `MEDIAANON_GUI_SCAN=1` | Scan the first file given on the command line for people when the window opens. |
 | `MEDIAANON_GUI_POSITION=seconds` | Start the playhead of the videos given on the command line at this time. |
 
 The documentation screenshots (`docs/images/gui.png`, `docs/images/gui-timeline.png`) are
@@ -160,5 +177,6 @@ scripts/gui_screenshots.sh
 | `crates/gui/src/queue.rs` | Queue items, status, folder scanning. |
 | `crates/gui/src/worker.rs` | Background batch processing with throttled progress and cancellation. |
 | `crates/gui/src/preview.rs` | Debounced background preview rendering (photos and video frames), zoom and pan, sample photo. |
+| `crates/gui/src/people.rs` | People filter: background scan, attribute model, include/exclude rule → visible-face marks. |
 | `crates/gui/src/timeline.rs` | Video timeline: scrubber, keyframes (add, move, delete), faces left visible. |
 | `crates/gui/assets/sample.jpg` | Sample photo for the preview (NASA, public domain; see `assets/README.md`). |

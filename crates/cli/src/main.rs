@@ -57,6 +57,27 @@ enum JsonLine<'a> {
     Err { input: &'a Path, error: String },
 }
 
+/// Loads the attribute model of `--cover-only` / `--cover-except` and checks
+/// the attribute names against it.
+fn people_filter(
+    args: &ProcessArgs,
+    options: &core::Options,
+) -> Result<Option<(core::AttributeModel, core::PeopleFilter)>> {
+    let Some(filter) = args.faces.people_filter() else { return Ok(None) };
+    let path = args
+        .faces
+        .people_model
+        .as_ref()
+        .context("--cover-only and --cover-except need an attribute model: pass --people-model FILE")?;
+    let model = core::AttributeModel::load(path, &options.compute)
+        .with_context(|| format!("cannot load the attribute model {}", path.display()))?;
+    let known: Vec<&str> = model.attributes().iter().map(|a| a.name.as_str()).collect();
+    if let Some(bad) = filter.attributes.iter().find(|a| !known.contains(&a.as_str())) {
+        anyhow::bail!("unknown attribute `{bad}`; this model knows: {}", known.join(", "));
+    }
+    Ok(Some((model, filter)))
+}
+
 fn process(cli: &Cli, args: &ProcessArgs) -> Result<ExitCode> {
     let options = args.options();
     options.validate().map_err(|_| {
@@ -102,6 +123,7 @@ fn process(cli: &Cli, args: &ProcessArgs) -> Result<ExitCode> {
         return Ok(ExitCode::SUCCESS);
     }
 
+    let people = people_filter(args, &options)?;
     let processor = Processor::new(options).context("cannot initialise the processor")?;
     if let (Some(dev), false) = (processor.inference_device(), cli.quiet || cli.json) {
         eprintln!("face detection on {dev}");
@@ -141,7 +163,18 @@ fn process(cli: &Cli, args: &ProcessArgs) -> Result<ExitCode> {
                 bar.set_position(p.done);
             }
         };
-        let result = processor.process_file_with(&job.input, &job.output, &edits, &on_progress, &cancel);
+        let result = match &people {
+            // The people filter first scans the file, then leaves visible the
+            // people it selects, in addition to the marks of --timeline.
+            Some((model, filter)) => {
+                processor.scan_people(&job.input, &edits.timeline, model, &on_progress, &cancel).and_then(|scan| {
+                    let mut edits = edits.clone();
+                    edits.visible.extend(scan.marks(filter));
+                    processor.process_file_with(&job.input, &job.output, &edits, &on_progress, &cancel)
+                })
+            }
+            None => processor.process_file_with(&job.input, &job.output, &edits, &on_progress, &cancel),
+        };
         if result.is_err() {
             failed.fetch_add(1, Ordering::Relaxed);
         }

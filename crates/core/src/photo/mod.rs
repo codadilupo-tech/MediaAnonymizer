@@ -10,12 +10,13 @@
 pub mod jpeg_dct;
 pub mod orientation;
 
-use crate::detect::{detection_dims, DetectorPool, Face, Point, RgbFrame};
+use crate::detect::{detection_dims, AttributeModel, DetectorPool, Face, Point, RgbFrame};
 use crate::edits::{FaceBox, PreviewFace, VisibleFace};
 use crate::media::ImageFormat;
 use crate::metadata::{exif, jpeg, png, webp, Changes, Plan};
 use crate::options::{FaceOptions, Options, TimestampOptions};
 use crate::overlay::{DateSource, DateTime, Stamp};
+use crate::people::{PeopleScan, PeopleTracker};
 use crate::redact::{self, Plane, Region};
 use crate::{CancelToken, Error, Result};
 use image::metadata::Orientation;
@@ -179,6 +180,31 @@ pub fn preview(
     }
     img.apply_orientation(orient);
     Ok(PhotoPreview { image: img.thumbnail(max_side, max_side), faces })
+}
+
+/// Finds the faces of a photo and classifies each person with `model`
+/// (boxes of the upright picture).
+pub fn scan_people(
+    input: &[u8],
+    opts: &FaceOptions,
+    pool: &DetectorPool,
+    model: &AttributeModel,
+) -> Result<PeopleScan> {
+    let format = crate::media::sniff_image(input).ok_or_else(|| Error::Unsupported("not an image".into()))?;
+    let (mut img, orient) = decode(input, format)?;
+    img.apply_orientation(orient);
+    let faces = detect(&img, Orientation::NoTransforms, opts, pool)?;
+    let rgb = img.to_rgb8();
+    let (w, h) = rgb.dimensions();
+    let frame = RgbFrame { width: w, height: h, data: rgb.into_raw() };
+    let mut tracker = PeopleTracker::new(w as f32, h as f32, 0, 1);
+    let owner = tracker.step(0, Some(&faces));
+    let todo = tracker.to_classify(0, &faces, &owner);
+    let crops: Vec<Face> = todo.iter().map(|&i| faces[i]).collect();
+    for (&i, scores) in todo.iter().zip(model.classify(&frame, &crops)?) {
+        tracker.add_scores(owner[i], 0, &scores);
+    }
+    Ok(PeopleScan { attributes: model.attributes().to_vec(), people: tracker.finish(0.0), fps: 0.0 })
 }
 
 fn union(a: Option<(u32, u32, u32, u32)>, b: Option<(u32, u32, u32, u32)>) -> Option<(u32, u32, u32, u32)> {

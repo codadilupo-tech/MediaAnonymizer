@@ -1,0 +1,8 @@
+# Attribute model pipeline (training only; the app does not need Python).
+torch>=2.4
+open_clip_torch>=2.24
+opencv-python-headless>=4.9
+onnx>=1.16
+onnxruntime>=1.18
+numpy>=1.26
+pillow>=10

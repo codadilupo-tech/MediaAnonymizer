@@ -3,7 +3,7 @@
 use eframe::egui;
 use mediaanon_core::{
     Corner, DeviceInfo, EncoderBackend, FaceMode, FaceOptions, FaceShape, HwAccel, InferenceDevice, Keyframe,
-    MetadataPolicy, Options, RedactionStyle, TimestampOptions, VideoQuality,
+    MetadataPolicy, Options, PeopleFilter, RedactionStyle, TimestampOptions, VideoQuality,
 };
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -33,6 +33,11 @@ pub struct Settings {
     pub suffix: String,
     pub folder: Option<PathBuf>,
     pub overwrite: bool,
+    /// Attribute model of the people filter; `None` looks for one next to
+    /// the application.
+    pub attribute_model: Option<PathBuf>,
+    /// Last rule of the people filter.
+    pub people_filter: PeopleFilter,
 }
 
 impl Default for Settings {
@@ -47,6 +52,8 @@ impl Default for Settings {
             suffix: ".anon".into(),
             folder: None,
             overwrite: false,
+            attribute_model: None,
+            people_filter: PeopleFilter::default(),
         }
     }
 }
@@ -309,6 +316,7 @@ pub fn show(
     env: &Environment,
     section: Option<SectionEdit<'_>>,
     before_keyframes: bool,
+    people: &mut dyn FnMut(&mut egui::Ui, &mut Settings),
 ) {
     egui::ScrollArea::vertical().show(ui, |ui| {
         if before_keyframes {
@@ -325,12 +333,14 @@ pub fn show(
             ui.separator();
             if !*sec.global {
                 section_settings(ui, s, sec.keyframe, &sec.range);
+                ui.separator();
+                people(ui, s);
                 return;
             }
             ui.weak("These apply to every file, and to this video before its first keyframe.");
             ui.add_space(4.0);
         }
-        global_settings(ui, s, env);
+        global_settings(ui, s, env, people);
     });
 }
 
@@ -386,7 +396,12 @@ fn section_settings(ui: &mut egui::Ui, s: &Settings, k: &mut Keyframe, range: &s
 }
 
 /// The settings shared by every file.
-fn global_settings(ui: &mut egui::Ui, s: &mut Settings, env: &Environment) {
+fn global_settings(
+    ui: &mut egui::Ui,
+    s: &mut Settings,
+    env: &Environment,
+    people: &mut dyn FnMut(&mut egui::Ui, &mut Settings),
+) {
     ui.heading("Metadata");
     for p in MetadataPolicy::ALL {
         ui.radio_value(&mut s.options.metadata, *p, metadata_label(*p));
@@ -398,6 +413,9 @@ fn global_settings(ui: &mut egui::Ui, s: &mut Settings, env: &Environment) {
     ui.add_enabled_ui(s.faces_enabled, |ui| {
         face_controls(ui, &mut s.face, "global");
     });
+
+    ui.separator();
+    people(ui, s);
 
     ui.separator();
     ui.heading("Timestamp");

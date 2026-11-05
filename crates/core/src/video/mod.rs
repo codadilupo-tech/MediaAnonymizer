@@ -28,11 +28,12 @@ mod temporal;
 
 pub use ffmpeg::{capabilities, Capabilities};
 
-use crate::detect::{detection_dims, DetectorPool, Face, Point, RgbFrame};
+use crate::detect::{detection_dims, AttributeModel, DetectorPool, Face, Point, RgbFrame};
 use crate::edits::{Edits, FaceBox, PreviewFace, Tracker};
 use crate::metadata::{Changes, Finding};
 use crate::options::{FaceOptions, HwAccel, Options};
 use crate::overlay::{DateSource, DateTime, Stamp};
+use crate::people::{PeopleScan, PeopleTracker};
 use crate::redact::{self, Plane};
 use crate::timeline::{FrameSections, Timeline};
 use crate::{CancelToken, Error, Progress, Result};
@@ -310,6 +311,80 @@ pub fn track_visible(
         t.lost = span.lost || span.frames.is_none_or(|(_, b)| b < last);
     }
     Ok(tracks)
+}
+
+/// Finds the people of a video and classifies them with `model`: every face
+/// is followed the way processing follows a marked face (same detections,
+/// same overlap rule and tolerance), and each person is classified on up to
+/// eight frames, one second apart, whose scores are averaged. Frames of cut
+/// sections and of sections where faces are not covered are skipped.
+pub fn scan_people(
+    input: &Path,
+    opts: &Options,
+    timeline: &Timeline,
+    detector: &DetectorPool,
+    model: &AttributeModel,
+    progress: &(dyn Fn(Progress) + Sync),
+    cancel: &CancelToken,
+) -> Result<PeopleScan> {
+    let probe = probe::probe(input)?;
+    let vs = probe.video().ok_or_else(|| Error::Unsupported("no video stream found".into()))?;
+    let (num, den) = vs.frame_rate().unwrap_or((30, 1));
+    let fps = num as f64 / den as f64;
+    let (mut width, mut height) = (vs.width.unwrap_or(0), vs.height.unwrap_or(0));
+    if matches!(vs.rotation(), 90 | 270) {
+        std::mem::swap(&mut width, &mut height);
+    }
+    if width == 0 || height == 0 {
+        return Err(Error::Ffmpeg("cannot determine the video dimensions".into()));
+    }
+    let max_side = opts.faces.as_ref().and_then(|f| f.detection_size).unwrap_or(DEFAULT_DETECTION_SIZE);
+    let (dw, dh) = detection_dims(width, height, max_side);
+    let mut tracker = PeopleTracker::new(dw as f32, dh as f32, track_tolerance(opts), fps.round().max(1.0) as u64);
+    let total = vs.frame_count(probe.duration());
+    let sections = FrameSections::new(opts, timeline, fps);
+    let detect_every = opts.video.detect_every.max(1) as u64;
+
+    let mut cmd = base_command();
+    cmd.args(hwaccel_args(opts, ffmpeg::capabilities()?)?);
+    cmd.arg("-i").arg(input);
+    cmd.args(["-map", &format!("0:{}", vs.index), "-an", "-sn", "-dn", "-fps_mode", "passthrough"]);
+    cmd.args(["-vf", &format!("scale={dw}:{dh}:flags=area"), "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"]);
+    cmd.stdout(Stdio::piped());
+    let mut proc = ffmpeg::Process::spawn(cmd, "ffmpeg (people scan)")?;
+    let mut out = proc.child.stdout.take().expect("stdout is piped");
+    let mut frame = RgbFrame { width: dw, height: dh, data: vec![0u8; dw as usize * dh as usize * 3] };
+    let mut idx = 0u64;
+    let result = (|| -> Result<()> {
+        loop {
+            cancel.check()?;
+            if !read_frame(&mut out, &mut frame.data)? {
+                return Ok(());
+            }
+            let section = sections.at(idx);
+            let faces = match section.faces {
+                Some(f) if !section.cut && idx.is_multiple_of(detect_every) => {
+                    Some(detector.detect(&frame, f.min_confidence)?)
+                }
+                _ => None,
+            };
+            let owner = tracker.step(idx, faces.as_deref());
+            if let Some(faces) = &faces {
+                let todo = tracker.to_classify(idx, faces, &owner);
+                if !todo.is_empty() {
+                    let crops: Vec<Face> = todo.iter().map(|&i| faces[i]).collect();
+                    for (&i, scores) in todo.iter().zip(model.classify(&frame, &crops)?) {
+                        tracker.add_scores(owner[i], idx, &scores);
+                    }
+                }
+            }
+            progress(Progress { done: idx, total, unit: "frames" });
+            idx += 1;
+        }
+    })();
+    proc.kill();
+    result?;
+    Ok(PeopleScan { attributes: model.attributes().to_vec(), people: tracker.finish(fps), fps })
 }
 
 /// Processes `input` into `output` (whose extension selects the container),

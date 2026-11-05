@@ -17,6 +17,7 @@ mediaanon-core  (library)
 │   └── irb        Photoshop image resources (IPTC, thumbnails)
 ├── detect       face detection
 │   ├── yunet      ONNX session, pre-processing, output decoding, NMS
+│   ├── attributes person attribute model (role, gear) on person crops
 │   ├── runtime    ONNX Runtime environment, execution providers
 │   └── geometry   Face, IoU, coordinate mapping
 ├── redact       regions (eye band / face ellipse) and pixel kernels
@@ -32,6 +33,7 @@ mediaanon-core  (library)
 │   └── temporal   detection smoothing over time
 ├── timeline     per-section video settings (keyframes, cuts)
 ├── edits        per-file decisions: timeline + faces left visible, face tracker
+├── people       people scan (track every face, classify), include/exclude rules → marks
 └── lib.rs       Processor, Report, Progress, inspect()
 
 mediaanon-cli   clap front-end, batch planning, progress bars, JSON output
@@ -148,6 +150,26 @@ Face redaction runs two FFmpeg processes and five kinds of threads:
   than the tolerance. `video::track_visible` runs the same tracker on a
   detector-resolution decode, from the first mark until every track ended, so
   the GUI can show where faces stay visible before processing.
+
+## People filter
+
+`people::PeopleTracker` follows *every* face with the same rule as
+`edits::Tracker` (best IoU ≥ 0.3 with the previous position, same
+tolerance), so a scan's people line up with what processing will track.
+`video::scan_people` decodes the video at detector resolution (cut sections
+and sections without face redaction are skipped, as in processing) and
+classifies each person with `detect::AttributeModel` on up to eight frames,
+one second apart; scores are averaged. The model is an external ONNX file
+(CLIP ViT-B/32 image tower + linear heads, `models/attributes/`) whose
+metadata lists the attributes, two thresholds each (`present`, `absent`) and
+the crop geometry.
+
+A `PeopleFilter` (`CoverOnly` / `CoverAllExcept` + attribute names) is
+turned into `VisibleFace` marks by `PeopleScan::marks`: only people the
+model is confident about become visible, each mark carrying `until` (the
+scan's last sighting), which ends the processing track there. Marks are the
+only interface with processing, so the filter adds no new path for a face
+to escape redaction: anything not marked is covered.
 
 ## Face detection
 

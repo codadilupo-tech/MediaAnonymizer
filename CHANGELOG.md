@@ -19,6 +19,17 @@ All notable changes are documented here. The format follows
 
 ### Added
 
+- People filter: scan a photo or video, recognise each person's role
+  (civilian, police, carabinieri, military) and gear (helmet, shield,
+  balaclava, face mask, hat, glasses, sunglasses) with a locally trained
+  attribute model, then cover only the people with chosen attributes
+  ("include only") or everyone except them ("exclude"). The rule writes
+  reviewable visible-face marks; unsure people stay covered. Desktop app:
+  *People filter* section of the left panel. CLI: `--people-model`,
+  `--cover-only`, `--cover-except`. Training pipeline (OpenCLIP backbone,
+  Wikimedia Commons and Open Images references) in `models/attributes/`.
+- Visible-face marks accept `until` (seconds): the face is covered again
+  from then on.
 - `mediaanon-core` library, `mediaanon` CLI and `mediaanon-gui` desktop app.
 - Metadata policies `keep`, `sensitive` (GPS and personal data) and `all`
   for JPEG, PNG, WebP, TIFF and every FFmpeg-readable video container;

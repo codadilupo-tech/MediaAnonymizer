@@ -18,7 +18,7 @@ fn a_marked_photo_face_stays_visible() {
     assert!(!plain.faces[0].visible);
     let (cx, cy) = plain.faces[0].bbox.center();
 
-    let mark = VisibleFace { time: 0.0, x: cx, y: cy };
+    let mark = VisibleFace { time: 0.0, x: cx, y: cy, until: None };
     let kept = p.preview_data(&data, None, &[mark], 512).unwrap();
     assert!(kept.faces[0].visible);
     assert_ne!(plain.image.to_rgb8().as_raw(), kept.image.to_rgb8().as_raw(), "the face is no longer covered");
@@ -37,7 +37,7 @@ fn a_marked_photo_face_stays_visible() {
 #[test]
 fn a_mark_away_from_faces_changes_nothing() {
     let p = processor();
-    let far = VisibleFace { time: 0.0, x: 0.02, y: 0.98 };
+    let far = VisibleFace { time: 0.0, x: 0.02, y: 0.98, until: None };
     let preview = p.preview_data(&fixture_bytes(), None, &[far], 512).unwrap();
     assert!(preview.faces.iter().all(|f| !f.visible));
 
@@ -61,7 +61,7 @@ fn a_marked_video_face_is_tracked() {
     let frame = p.preview_video_frame(&input, 0.4, &Timeline::default(), &[], 320).unwrap();
     assert_eq!(frame.faces.len(), 1);
     let (cx, cy) = frame.faces[0].bbox.center();
-    let edits = Edits { visible: vec![VisibleFace { time: 0.4, x: cx, y: cy }], ..Default::default() };
+    let edits = Edits { visible: vec![VisibleFace { time: 0.4, x: cx, y: cy, until: None }], ..Default::default() };
 
     // Tracking pass: followed from the mark to the end of the clip.
     let tracks = p.track_visible_faces(&input, &edits, &|_| {}, &CancelToken::new()).unwrap();

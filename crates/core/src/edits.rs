@@ -30,6 +30,11 @@ pub struct VisibleFace {
     /// height.
     pub x: f32,
     pub y: f32,
+    /// Videos: time after which the face is covered again even if it is
+    /// still followed (set by people filters to the time the scan last saw
+    /// the person, so that a track cannot drift to someone else later).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub until: Option<f64>,
 }
 
 /// Everything decided for one file besides the global options.
@@ -73,10 +78,14 @@ impl Edits {
     pub fn validate(&self) -> crate::Result<()> {
         self.timeline.validate()?;
         for v in &self.visible {
-            let ok = v.time.is_finite() && v.time >= 0.0 && (0.0..=1.0).contains(&v.x) && (0.0..=1.0).contains(&v.y);
+            let ok = v.time.is_finite()
+                && v.time >= 0.0
+                && (0.0..=1.0).contains(&v.x)
+                && (0.0..=1.0).contains(&v.y)
+                && v.until.is_none_or(|u| u.is_finite() && u >= v.time);
             if !ok {
                 return Err(crate::Error::InvalidOptions(format!(
-                    "invalid visible face mark at {:.3}s ({}, {}): x and y must be in 0..=1",
+                    "invalid visible face mark at {:.3}s ({}, {}): x and y must be in 0..=1, `until` after the mark",
                     v.time, v.x, v.y
                 )));
             }
@@ -135,7 +144,7 @@ pub struct PreviewFace {
 }
 
 /// Overlap with the previous position needed to continue a track.
-const TRACK_IOU: f32 = 0.3;
+pub(crate) const TRACK_IOU: f32 = 0.3;
 
 /// The face a mark at `p` designates: the smallest face containing the point,
 /// else the nearest one whose centre is within its own size; `None` if the
@@ -184,6 +193,8 @@ enum State {
 #[derive(Debug, Clone)]
 struct Mark {
     frame: u64,
+    /// Last frame the face may stay visible.
+    until: Option<u64>,
     point: Point,
     state: State,
     start: Option<u64>,
@@ -216,6 +227,7 @@ impl Tracker {
             .iter()
             .map(|v| Mark {
                 frame: (v.time.max(0.0) * fps).round() as u64,
+                until: v.until.map(|u| (u.max(0.0) * fps).round() as u64),
                 point: Point::new(v.x * width, v.y * height),
                 state: State::Waiting,
                 start: None,
@@ -252,6 +264,10 @@ impl Tracker {
         // Continue the active tracks: best overlap with the last position.
         for (mi, m) in self.marks.iter_mut().enumerate() {
             let State::Active { last, .. } = m.state else { continue };
+            if m.until.is_some_and(|u| idx > u) {
+                m.state = State::Ended;
+                continue;
+            }
             let best = faces
                 .iter()
                 .enumerate()
@@ -324,7 +340,7 @@ mod tests {
 
     #[test]
     fn a_marked_face_is_followed_until_lost() {
-        let v = VisibleFace { time: 1.0, x: 0.1, y: 0.1 };
+        let v = VisibleFace { time: 1.0, x: 0.1, y: 0.1, until: None };
         let mut t = Tracker::new(&[v], 10.0, 1000.0, 1000.0, 3);
         let other = face(600.0, 600.0, 100.0);
         // Before the mark: nothing visible.
@@ -345,7 +361,7 @@ mod tests {
 
     #[test]
     fn short_gaps_and_skipped_frames_keep_the_track() {
-        let v = VisibleFace { time: 0.0, x: 0.1, y: 0.1 };
+        let v = VisibleFace { time: 0.0, x: 0.1, y: 0.1, until: None };
         let mut t = Tracker::new(&[v], 25.0, 1000.0, 1000.0, 4);
         assert_eq!(t.step(0, Some(&[face(50.0, 50.0, 100.0)])), vec![Some(0)]);
         t.step(1, None);
@@ -354,8 +370,20 @@ mod tests {
     }
 
     #[test]
+    fn a_track_ends_at_its_until_time() {
+        let v = VisibleFace { time: 0.0, x: 0.1, y: 0.1, until: Some(0.2) };
+        let mut t = Tracker::new(&[v], 10.0, 1000.0, 1000.0, 4);
+        for idx in 0..=2 {
+            assert_eq!(t.step(idx, Some(&[face(50.0, 50.0, 100.0)])), vec![Some(0)], "frame {idx}");
+        }
+        assert_eq!(t.step(3, Some(&[face(50.0, 50.0, 100.0)])), vec![None]);
+        assert!(t.finished());
+        assert_eq!(t.spans(), vec![Span { frames: Some((0, 2)), lost: true }]);
+    }
+
+    #[test]
     fn a_track_never_jumps_to_a_distant_face() {
-        let v = VisibleFace { time: 0.0, x: 0.1, y: 0.1 };
+        let v = VisibleFace { time: 0.0, x: 0.1, y: 0.1, until: None };
         let mut t = Tracker::new(&[v], 25.0, 1000.0, 1000.0, 4);
         t.step(0, Some(&[face(50.0, 50.0, 100.0)]));
         assert_eq!(t.step(1, Some(&[face(400.0, 50.0, 100.0)])), vec![None]);
@@ -363,7 +391,7 @@ mod tests {
 
     #[test]
     fn a_mark_on_no_face_is_given_up() {
-        let v = VisibleFace { time: 0.0, x: 0.9, y: 0.9 };
+        let v = VisibleFace { time: 0.0, x: 0.9, y: 0.9, until: None };
         let mut t = Tracker::new(&[v], 25.0, 1000.0, 1000.0, 2);
         for idx in 0..4 {
             assert_eq!(t.step(idx, Some(&[face(50.0, 50.0, 100.0)])), vec![None]);
@@ -378,11 +406,11 @@ mod tests {
             serde_json::from_str(r#"{"keyframes":[{"time":2,"cut":true}],"visible":[{"time":1.5,"x":0.4,"y":0.3}]}"#)
                 .unwrap();
         assert_eq!(e.timeline.keyframes().len(), 1);
-        assert_eq!(e.visible, vec![VisibleFace { time: 1.5, x: 0.4, y: 0.3 }]);
+        assert_eq!(e.visible, vec![VisibleFace { time: 1.5, x: 0.4, y: 0.3, until: None }]);
         assert_eq!(serde_json::from_str::<Edits>(&serde_json::to_string(&e).unwrap()).unwrap(), e);
         let old: Edits = serde_json::from_str(r#"{"keyframes":[]}"#).unwrap();
         assert!(old.visible.is_empty(), "timeline-only files still load");
-        let bad = Edits { visible: vec![VisibleFace { time: 0.0, x: 1.5, y: 0.0 }], ..Default::default() };
+        let bad = Edits { visible: vec![VisibleFace { time: 0.0, x: 1.5, y: 0.0, until: None }], ..Default::default() };
         assert!(bad.validate().is_err());
     }
 }

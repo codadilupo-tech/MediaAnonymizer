@@ -61,6 +61,26 @@ See [PRIVACY.md](PRIVACY.md) for the exact rules.
 | `--strength <F>` | `1.0` | Multiplier of the blur radius / mosaic block size (0–10]. |
 | `--detection-size <PX>` | 1920 photos, 960 videos | Longest side of the image given to the detector. Increase for small faces in high-resolution media. |
 | `--model <FILE>` | bundled | Custom YuNet-compatible ONNX model. |
+| `--people-model <FILE>` | `$MEDIAANON_ATTRIBUTE_MODEL` | Person attribute model (see [models/attributes](../models/attributes/README.md)), needed by the two options below. |
+| `--cover-only <ATTR,...>` | | Cover only the people recognised with one of these attributes, e.g. `civilian` or `balaclava,face_mask`. Everyone the model is sure has none of them is left visible. |
+| `--cover-except <ATTR,...>` | | Cover everyone except the people the model is sure have one of these attributes, e.g. `police,carabinieri,military`. |
+
+#### People filter
+
+`--cover-only` and `--cover-except` first scan each file: every face is followed through
+the video and classified by the attribute model (role: `civilian`, `police`,
+`carabinieri`, `military`; gear: `helmet`, `shield`, `balaclava`, `face_mask`, `hat`,
+`glasses`, `sunglasses` with the default model; an unknown name is an error that lists
+the model's attributes). The rule then leaves visible only the people the model is
+*confident* about, as if they had been marked in `visible` (until the scan last saw
+them); people it is unsure about, faces too small to classify and faces the scan did not
+see are covered. Videos are decoded twice (scan, then processing). Check the result: see
+[PRIVACY.md](PRIVACY.md#people-filter).
+
+```sh
+# Protest footage: leave police, carabinieri and soldiers visible, cover everyone else.
+mediaanon process --strip-metadata --people-model attributes.onnx --cover-except police,carabinieri,military clip.mp4
+```
 
 ### Timestamp overlay
 
@@ -123,7 +143,7 @@ first one the command-line settings apply. Photos ignore the keyframes.
 The same file can list faces to leave visible (`visible`), meant for a single input: a
 point on the face as a fraction of the upright picture's width and height, and for videos
 the time of the frame the point refers to. The face is followed from there until it is
-lost (see [PRIVACY.md](PRIVACY.md#faces-left-visible)).
+lost (see [PRIVACY.md](PRIVACY.md#faces-left-visible)), or until `until` (seconds) if given.
 
 ```json
 {
@@ -133,7 +153,8 @@ lost (see [PRIVACY.md](PRIVACY.md#faces-left-visible)).
     { "time": 41.0, "faces": null, "timestamp": false }
   ],
   "visible": [
-    { "time": 3.2, "x": 0.41, "y": 0.27 }
+    { "time": 3.2, "x": 0.41, "y": 0.27 },
+    { "time": 8.0, "x": 0.62, "y": 0.31, "until": 14.5 }
   ]
 }
 ```
@@ -203,6 +224,7 @@ file and `devices --json` a single object.
 | `MEDIAANON_FFMPEG`, `MEDIAANON_FFPROBE` | Paths of the FFmpeg tools (default: next to `mediaanon`, then `PATH`). |
 | `ORT_DYLIB_PATH` | ONNX Runtime library to load (builds with the `ort-dynamic` feature). |
 | `MEDIAANON_LOG` | Log filter (`tracing` syntax), e.g. `MEDIAANON_LOG=debug`. |
+| `MEDIAANON_ATTRIBUTE_MODEL` | Default of `--people-model` (and of the desktop app's people filter). |
 
 ## Recipes
 
