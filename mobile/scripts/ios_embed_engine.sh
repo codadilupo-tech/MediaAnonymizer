@@ -47,7 +47,16 @@ fi
 # Xcode's build environment (SDKROOT, *_DEPLOYMENT_TARGET for other platforms,
 # compiler flags...) breaks the host-side build scripts cargo compiles, so
 # cargo runs with a clean environment.
-path="${CARGO_HOME:-$HOME/.cargo}/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+#
+# The tools are looked up where the caller found them first: rustup's
+# proxies are not always in $CARGO_HOME/bin (Homebrew's rustup keeps them in
+# its own prefix, which is how the GitHub macOS runners install Rust).
+path="${CARGO_HOME:-$HOME/.cargo}/bin:/opt/homebrew/opt/rustup/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+for tool in rustup cargo; do
+    if found=$(command -v "$tool" 2>/dev/null) && [ -x "$found" ]; then
+        path="$(dirname "$found"):$path"
+    fi
+done
 run_clean() {
     env -i HOME="$HOME" USER="${USER:-}" TMPDIR="${TMPDIR:-/tmp}" PATH="$path" \
         ${CARGO_HOME:+CARGO_HOME="$CARGO_HOME"} ${RUSTUP_HOME:+RUSTUP_HOME="$RUSTUP_HOME"} \
@@ -56,7 +65,11 @@ run_clean() {
         "$@"
 }
 
-if command -v rustup >/dev/null 2>&1 || [ -x "${CARGO_HOME:-$HOME/.cargo}/bin/rustup" ]; then
+if ! run_clean sh -c 'command -v cargo' >/dev/null; then
+    echo "error: cargo not found (searched $path); install Rust with rustup" >&2
+    exit 1
+fi
+if run_clean sh -c 'command -v rustup' >/dev/null; then
     run_clean rustup target add "$target" >/dev/null
 fi
 # Always optimised: the pixel kernels are far too slow in debug builds.
