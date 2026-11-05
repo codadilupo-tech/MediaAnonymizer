@@ -26,6 +26,7 @@ import csv
 import hashlib
 import json
 import importlib.util
+import sys
 from collections import defaultdict
 from pathlib import Path
 
@@ -41,6 +42,7 @@ MIN_FACE = 20
 # Weight of a role guessed from the source (Open Images is mostly everyday
 # life) and of an unknown gear label treated as absent.
 WEAK = 0.25
+RARE_IN_OPENIMAGES = {"shield", "balaclava", "face_mask"}
 
 
 def split_of(key: str) -> str:
@@ -113,6 +115,7 @@ def openimages(data: Path, out: Path, per_split: dict[str, int], samples: dict[s
         "accessories_common", Path(__file__).resolve().parent.parent / "accessories" / "common.py"
     )
     acc_common = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = acc_common  # dataclasses look the module up there
     spec.loader.exec_module(acc_common)
     FACE_CLASS, GROUPS, MIN_INSIDE, head_crop = (
         acc_common.FACE_CLASS, acc_common.GROUPS, acc_common.MIN_INSIDE, acc_common.head_crop
@@ -178,8 +181,12 @@ def openimages(data: Path, out: Path, per_split: dict[str, int], samples: dict[s
                         labels[idx[a.name]] = int(a.name == "civilian")
                         weights[idx[a.name]] = WEAK
                     elif a.name not in covered:
+                        # Riot shields, balaclavas and medical masks are
+                        # practically absent from Open Images (mostly
+                        # everyday photos taken before 2020): reliable
+                        # negatives. Other gear stays weak.
                         labels[idx[a.name]] = 0
-                        weights[idx[a.name]] = WEAK
+                        weights[idx[a.name]] = 1.0 if a.name in RARE_IN_OPENIMAGES else WEAK
                 name = f"o_{image}_{k}.jpg"
                 person_crop(img, fx, fy, fw, fh).save(out / name, quality=93)
                 samples[split].append({"file": name, "labels": labels, "weights": weights, "source": "openimages"})

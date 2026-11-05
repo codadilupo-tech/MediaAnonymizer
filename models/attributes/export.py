@@ -104,7 +104,8 @@ def main() -> None:
                 ref = model(x).numpy()
             print(f"max |onnx - torch| on the first batch: {np.abs(scores[0] - ref).max():.4f}")
     p = np.concatenate(scores)
-    y = np.array([s["labels"] for s in split])
+    # Only labels people gave (weight 1) count; weak ones are guesses.
+    y = np.where(np.array([s["weights"] for s in split]) >= 1.0, np.array([s["labels"] for s in split]), -1)
     report = {}
     for i, a in enumerate(meta["attributes"]):
         k = y[:, i] >= 0

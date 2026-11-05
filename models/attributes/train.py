@@ -11,7 +11,8 @@
    weight decay *towards* that start, so attributes with few or noisy
    examples stay close to CLIP's own judgement.
 3. On the validation split, two thresholds are chosen per attribute:
-   `present` (lowest score with a precision of at least `--precision`) and
+   `present` (lowest score with a precision of at least `--precision`, and
+   at least 0.5) and
    `absent` (highest score below which at most `1 - --recall` of the
    positives fall). The application treats anything in between as unsure.
 
@@ -33,6 +34,7 @@ from PIL import Image
 
 from common import ATTRIBUTES, CLIP_MODEL, CLIP_PRETRAINED, MEAN, STD
 
+MIN_PRESENT = 0.5
 ROLE = torch.tensor([a.group == "role" for a in ATTRIBUTES])
 
 
@@ -138,6 +140,9 @@ def thresholds(p: np.ndarray, y: np.ndarray, precision: float, recall: float) ->
         fp = int(((p >= t) & (y == 0)).sum())
         rows.append((t, tp / max(1, tp + fp), tp / pos))
     present = next((t for t, prec, _ in rows if prec >= precision and tp_ok(p, y, t)), 0.98)
+    # Easy validation negatives can make a very low threshold look precise:
+    # never call an attribute present below an even chance.
+    present = max(present, MIN_PRESENT)
     # Highest threshold under which at most (1 - recall) of the positives fall.
     absent = max((t for t in grid if (p[y == 1] < t).mean() <= 1 - recall), default=0.02)
     absent = min(absent, present)
@@ -171,6 +176,11 @@ def average_precision(p: np.ndarray, y: np.ndarray) -> float:
     return float((prec * y).sum() / max(1, y.sum()))
 
 
+def reliable(y: torch.Tensor, wt: torch.Tensor) -> torch.Tensor:
+    """Labels whose weight is 1; weak ones (guessed from the source) become unknown."""
+    return torch.where(wt >= 1.0, y, torch.full_like(y, -1))
+
+
 def evaluate(w, b, e, y) -> dict:
     p = predict(w, b, e).numpy()
     y = y.numpy()
@@ -186,8 +196,8 @@ def main() -> None:
     ap.add_argument("--data", type=Path, default=Path("data"))
     ap.add_argument("--out", type=Path, default=Path("runs/v1"))
     ap.add_argument("--epochs", type=int, default=60)
-    ap.add_argument("--lr", type=float, default=1e-3)
-    ap.add_argument("--decay", type=float, default=1e-4, help="pull towards the zero-shot weights")
+    ap.add_argument("--lr", type=float, default=1e-2)
+    ap.add_argument("--decay", type=float, default=1e-6, help="pull towards the zero-shot weights")
     ap.add_argument("--precision", type=float, default=0.9)
     ap.add_argument("--recall", type=float, default=0.95)
     args = ap.parse_args()
@@ -209,7 +219,8 @@ def main() -> None:
     y_tr = torch.cat([lab["train"], lab["train"]])
     wt_tr = torch.cat([wts["train"], wts["train"]])
     log = []
-    zs = evaluate(w0, b0, emb["validation"], lab["validation"])
+    yv_rel = reliable(lab["validation"], wts["validation"])
+    zs = evaluate(w0, b0, emb["validation"], yv_rel)
     print("zero-shot validation AP: " + ", ".join(f"{k}={v['ap']:.2f}" for k, v in zs.items() if v["ap"] is not None))
     best, best_state = -1.0, None
     for epoch in range(1, args.epochs + 1):
@@ -221,20 +232,20 @@ def main() -> None:
             loss.backward()
             opt.step()
         with torch.no_grad():
-            val = evaluate(w, b, torch.cat([emb["validation"], emb_deg["validation"]]),
-                           torch.cat([lab["validation"], lab["validation"]]))
+            val = evaluate(w, b, torch.cat([emb["validation"], emb_deg["validation"]]), torch.cat([yv_rel, yv_rel]))
         aps = [v["ap"] for v in val.values() if v["ap"] is not None]
         mean_ap = float(np.mean(aps))
-        log.append({"epoch": epoch, "loss": float(loss), "val_map": mean_ap, "val": val})
+        log.append({"epoch": epoch, "loss": loss.item(), "val_map": mean_ap, "val": val})
         if mean_ap > best:
             best, best_state = mean_ap, (w.detach().clone(), b.detach().clone())
         if epoch % 10 == 0:
             print(f"epoch {epoch}: loss {float(loss):.3f}, validation mAP {mean_ap:.3f}", flush=True)
+    print(f"zero-shot validation mAP {np.mean([v['ap'] for v in zs.values() if v['ap'] is not None]):.3f}")
 
     w, b = best_state
     # Thresholds on clean and degraded validation crops together.
     pv = predict(w, b, torch.cat([emb["validation"], emb_deg["validation"]])).numpy()
-    yv = torch.cat([lab["validation"], lab["validation"]]).numpy()
+    yv = torch.cat([yv_rel, yv_rel]).numpy()
     thr = {a.name: thresholds(pv[:, i], yv[:, i], args.precision, args.recall) for i, a in enumerate(ATTRIBUTES)}
     torch.save({"w": w, "b": b, "w0": w0, "thresholds": thr, "attributes": [a.name for a in ATTRIBUTES]},
                args.out / "head.pt")

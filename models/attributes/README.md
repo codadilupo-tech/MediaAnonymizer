@@ -30,7 +30,7 @@ in this folder for development builds), or uses the file you choose.
   CLIP's judgement. Roles are exclusive (softmax); gear items are
   independent (sigmoid).
 * **Two thresholds per attribute**, chosen on validation data: `present`
-  (precision ≥ 90 %) and `absent` (at most 5 % of the people who have the
+  (precision ≥ 90 %, never below 0.5) and `absent` (at most 5 % of the people who have the
   attribute score lower). In between, the model is *unsure*, and the
   application covers unsure people whatever the rule says.
 
@@ -77,6 +77,35 @@ attribute, average precision, precision and recall at the `present`
 threshold, and how many people who have it fall below `absent`. Read it
 before using the model. `--int8` produces a 4× smaller model (weights
 quantized to 8 bits); check its metrics too.
+
+### Reference run (v1)
+
+12,479 Commons pictures and 12,466 Open Images faces gave 22,513 training,
+2,362 validation and 2,979 test crops. Validation mAP: 0.69 for CLIP
+zero-shot, 0.82 after training. On the test split (labels given by people
+only; weak guesses excluded):
+
+| Attribute | AP | Precision at `present` | Recall at `present` | Positives below `absent` |
+|---|---|---|---|---|
+| civilian | 0.81 | 0.87 | 0.45 | 5 % |
+| police | 0.72 | 0.92 | 0.29 | 8 % |
+| carabinieri | 0.76 | 0.91 | 0.24 | 4 % |
+| military | 0.82 | 0.83 | 0.64 | 4 % |
+| helmet | 0.64 | 1.00 | 0.01 | 10 % |
+| shield | 0.94 | 1.00 | 0.73 | 10 % |
+| balaclava | 0.75 | 0.87 | 0.51 | 12 % |
+| face_mask | 0.39 | 0.55 | 0.50 | 28 % |
+| hat | 0.77 | 0.96 | 0.20 | 3 % |
+| glasses | 0.77 | 0.88 | 0.32 | 3 % |
+| sunglasses | 0.77 | 0.91 | 0.45 | 5 % |
+
+Read it as: the model rarely *confirms* an attribute wrongly, but often
+stays unsure (low recall), so many people stay covered. *Helmet* is almost
+never confirmed and *face mask* is unreliable (few clean examples). With
+"cover only…", the last column is the share of people who have the
+attribute yet would be left visible: keep those rules for attributes where
+it is low, and review the result. Shield and balaclava are measured against
+everyday photos, which flatters them.
 
 A run on an Apple M4 Pro takes about 30 minutes for the download, 5 for
 preparation, 10 for the embeddings and seconds for the heads.
