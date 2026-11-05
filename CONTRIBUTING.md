@@ -36,8 +36,10 @@ cargo test --workspace
 * Add tests for new behaviour. Metadata rules need a unit test with a
   hand-built sample (see `metadata/exif.rs` and `metadata/jpeg.rs`), pipeline
   changes an integration test in `crates/core/tests`.
-* GUI changes: run `scripts/gui_screenshots.sh` to refresh the screenshots in
-  `docs/images/` (used by README.md and docs/GUI.md) and update docs/GUI.md.
+* GUI changes: run `scripts/gui_screenshots.sh` to refresh the screenshots and the
+  animated demo in `docs/images/` (used by README.md and docs/GUI.md), check the
+  GIF still shows each step (`scripts/gui_demo.py` drives the GUI by screen
+  position), and update docs/GUI.md.
 * Keep [docs/PRIVACY.md](docs/PRIVACY.md) in sync with any change to what is
   removed or kept, and update [CHANGELOG.md](CHANGELOG.md).
 * Do not commit personal photos or videos. Test fixtures must be public domain

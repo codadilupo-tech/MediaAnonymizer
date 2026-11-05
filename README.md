@@ -124,7 +124,7 @@ the library and the CLI. Add `--features coreml`, `cuda` or `directml` for GPU
 face detection, then choose the device under **Compute → Inference**. See
 [docs/GUI.md](docs/GUI.md) for a tour of the interface.
 
-<p align="center"><img src="docs/images/gui-timeline.png" alt="Video timeline: keyframes, a cut section, and the section settings in the left panel" width="85%"></p>
+<p align="center"><img src="docs/images/gui-demo.gif" alt="Video timeline in action: scrubbing, adding keyframes, blurring a section, cutting a part out, moving and deleting keyframes" width="85%"></p>
 <p align="center"><em>Video timeline: each keyframe starts a section with its own face settings, or cuts it out.</em></p>
 
 Platform prerequisites:

@@ -88,6 +88,8 @@ timeline:
 
 ![Video timeline with keyframes](images/gui-timeline.png)
 
+![The video timeline in action](images/gui-demo.gif)
+
 - Click or drag on the timeline to pick a frame; the preview shows that frame with the
   settings of its section (the detection runs on that frame alone; the real output also
   smooths detections over neighbouring frames). The buttons step one frame, jump to the
@@ -159,9 +161,12 @@ XDG desktop portal, so no GTK development packages are needed to build.
 | `MEDIAANON_GUI_SCAN=1` | Scan the first file given on the command line for people when the window opens. |
 | `MEDIAANON_GUI_POSITION=seconds` | Start the playhead of the videos given on the command line at this time. |
 
-The documentation screenshots (`docs/images/gui.png`, `docs/images/gui-timeline.png`) are
-produced by a script, which makes the demo media from files in the repository and runs
-headless under `xvfb-run` on Linux. Run it after every change to the interface:
+The documentation screenshots (`docs/images/gui.png`, `docs/images/gui-timeline.png`) and
+the animated demo (`docs/images/gui-demo.gif`) are produced by a script, which makes the
+demo media from files in the repository and runs headless under `xvfb-run` on Linux. The
+GIF is recorded only on Linux: `scripts/gui_demo.py` drives the app with synthetic mouse
+and keyboard input (python-xlib) while ffmpeg records it. Run the script after every change
+to the interface:
 
 ```sh
 scripts/gui_screenshots.sh
