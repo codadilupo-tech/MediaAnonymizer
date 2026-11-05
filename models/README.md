@@ -26,6 +26,15 @@ YuNet-compatible model can be supplied at runtime with `--model`.
 > Reference: W. Wu, H. Peng, S. Yu, *YuNet: A Tiny Millisecond-level Face
 > Detector*, Machine Intelligence Research, 2023.
 
+## `attributes/`
+
+Training pipeline of the person attribute model used by the people filter
+(role: civilian, police, carabinieri, military; gear: helmet, shield,
+balaclava, face mask, hat, glasses, sunglasses), built on a frozen OpenCLIP
+image tower with reference pictures from Wikimedia Commons and Open Images.
+The model is trained locally and not bundled; see
+[attributes/README.md](attributes/README.md).
+
 ## `accessories/` (in preparation)
 
 Training pipeline for a small detector of hats, helmets, glasses and

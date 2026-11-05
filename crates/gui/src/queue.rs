@@ -35,6 +35,8 @@ pub struct Item {
     pub position: f64,
     /// Videos: duration and frame rate, loaded in the background.
     pub info: Option<Result<VideoInfo, String>>,
+    /// People found by the people filter's scan.
+    pub people: Option<crate::people::FileScan>,
 }
 
 impl Item {
@@ -110,6 +112,7 @@ impl Queue {
             tracks: None,
             position: 0.0,
             info: None,
+            people: None,
         });
     }
 
@@ -163,6 +166,7 @@ mod tests {
             tracks: None,
             position: 0.0,
             info: None,
+            people: None,
         }
     }
 

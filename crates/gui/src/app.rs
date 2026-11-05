@@ -56,6 +56,11 @@ pub struct App {
     /// Section under the playhead (video, keyframe index, keyframe count):
     /// entering another section shows its settings again.
     section_seen: Option<(PathBuf, usize, usize)>,
+    /// People filter: scans and the attribute model.
+    people: crate::people::People,
+    /// Scan the selected file for people on the first frame
+    /// (`MEDIAANON_GUI_SCAN=1`, for documentation screenshots).
+    autoscan: bool,
 }
 
 /// What a tracking pass depends on.
@@ -109,6 +114,8 @@ impl App {
             track_wanted: None,
             section_global: false,
             section_seen: None,
+            people: crate::people::People::default(),
+            autoscan: std::env::var_os("MEDIAANON_GUI_SCAN").is_some_and(|v| v == "1"),
         }
     }
 
@@ -339,7 +346,7 @@ impl App {
                 marks.retain(|m| !face.bbox.contains(m.x, m.y));
             } else {
                 let (x, y) = face.bbox.center();
-                marks.push(VisibleFace { time: 0.0, x, y });
+                marks.push(VisibleFace { time: 0.0, x, y, until: None });
             }
         };
         let Some(i) = self.selected.filter(|&i| i < self.queue.items.len()) else {
@@ -354,7 +361,7 @@ impl App {
         }
         if !face.visible {
             let (x, y) = face.bbox.center();
-            item.edits.visible.push(VisibleFace { time: item.position, x, y });
+            item.edits.visible.push(VisibleFace { time: item.position, x, y, until: None });
             return;
         }
         // A visible face of a video belongs to a track: remove its mark.
@@ -573,7 +580,7 @@ impl App {
     }
 
     fn take_screenshot_if_ready(&mut self, ctx: &egui::Context) {
-        let ready = self.preview.is_ready() && !self.running() && !self.autostart;
+        let ready = self.preview.is_ready() && !self.running() && !self.autostart && !self.people.is_running();
         let Some(shot) = &mut self.screenshot else { return };
         if *shot.done.lock().unwrap_or_else(|e| e.into_inner()) {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -648,6 +655,12 @@ impl eframe::App for App {
         // Preview the selected photo with the current settings; videos (and
         // no selection) show a sample photo instead.
         self.update_video_info(&ctx);
+        self.people.poll(&mut self.queue.items);
+        if std::mem::take(&mut self.autoscan) {
+            if let Some(item) = self.selected.and_then(|i| self.queue.items.get(i)) {
+                self.people.scan(item, &self.settings, &ctx);
+            }
+        }
         self.update_tracking(&ctx);
         let selected = self.selected.and_then(|i| self.queue.items.get(i));
         let target = match selected {
@@ -697,13 +710,28 @@ impl eframe::App for App {
                 .and_then(|i| self.queue.items.get(i))
                 .is_some_and(|i| i.is_video() && matches!(i.info, Some(Ok(_))) && !i.edits.timeline.is_empty());
         let running = self.running();
-        let edit = section.and_then(|(i, (k, range))| {
-            let keyframe = self.queue.items[i].edits.timeline.get_mut(k)?;
-            Some(settings::SectionEdit { keyframe, range, global: &mut self.section_global })
+        // The section's keyframe and the people filter both edit the selected
+        // item: the keyframe is copied out and written back after the panel.
+        let mut keyframe =
+            section.as_ref().and_then(|(i, (k, _))| self.queue.items[*i].edits.timeline.get_mut(*k).cloned());
+        let edit = section.as_ref().zip(keyframe.as_mut()).map(|((_, (_, range)), keyframe)| settings::SectionEdit {
+            keyframe,
+            range: range.clone(),
+            global: &mut self.section_global,
         });
+        let mut item = self.selected.and_then(|i| self.queue.items.get_mut(i));
+        let people = &mut self.people;
+        let mut people_ui = |ui: &mut egui::Ui, s: &mut Settings| people.show(ui, s, item.as_deref_mut());
         egui::Panel::left("settings").resizable(true).default_size(310.0).show(ui, |ui| {
-            ui.add_enabled_ui(!running, |ui| settings::show(ui, &mut self.settings, &self.env, edit, before_keyframes));
+            ui.add_enabled_ui(!running, |ui| {
+                settings::show(ui, &mut self.settings, &self.env, edit, before_keyframes, &mut people_ui)
+            });
         });
+        if let (Some((i, (k, _))), Some(kf)) = (section, keyframe) {
+            if let Some(slot) = self.queue.items[i].edits.timeline.get_mut(k) {
+                *slot = kf;
+            }
+        }
         let video = self.selected.filter(|&i| self.queue.items.get(i).is_some_and(|i| i.is_video()));
         let tracking = video.and_then(|i| self.tracking_progress(&self.queue.items[i].path));
         let clicked = egui::Panel::right("preview")

@@ -9,9 +9,12 @@
 //! Detection works on a downscaled RGB copy of the frame ([`RgbFrame`]);
 //! callers map the resulting coordinates back to full resolution.
 
+mod attributes;
 mod geometry;
 mod runtime;
 mod yunet;
+
+pub use attributes::{AttributeGroup, AttributeInfo, AttributeModel};
 
 pub use geometry::{Face, Point};
 pub use runtime::{available_devices, DeviceInfo};

@@ -155,6 +155,22 @@ pub struct FaceArgs {
     /// Custom YuNet-compatible ONNX face detection model.
     #[arg(long, value_name = "FILE")]
     pub model: Option<PathBuf>,
+
+    /// Person attribute model (see models/attributes), required by
+    /// --cover-only and --cover-except.
+    #[arg(long, value_name = "FILE", env = "MEDIAANON_ATTRIBUTE_MODEL")]
+    pub people_model: Option<PathBuf>,
+
+    /// Cover only the people the attribute model recognises with one of
+    /// these attributes (e.g. `civilian` or `balaclava,face_mask`); leave the
+    /// others visible when the model is sure they have none of them.
+    #[arg(long, value_name = "ATTR,...", value_delimiter = ',', conflicts_with = "cover_except")]
+    pub cover_only: Vec<String>,
+
+    /// Cover everyone except the people the attribute model is sure have one
+    /// of these attributes (e.g. `police,carabinieri,military`).
+    #[arg(long, value_name = "ATTR,...", value_delimiter = ',')]
+    pub cover_except: Vec<String>,
 }
 
 impl FaceArgs {
@@ -168,6 +184,17 @@ impl FaceArgs {
             || self.strength.is_some()
             || self.detection_size.is_some()
             || self.model.is_some()
+            || self.people_filter().is_some()
+    }
+
+    /// The people filter, if `--cover-only` or `--cover-except` is given.
+    pub fn people_filter(&self) -> Option<core::PeopleFilter> {
+        let (mode, attributes) = match (&self.cover_only, &self.cover_except) {
+            (only, _) if !only.is_empty() => (core::FilterMode::CoverOnly, only),
+            (_, except) if !except.is_empty() => (core::FilterMode::CoverAllExcept, except),
+            _ => return None,
+        };
+        Some(core::PeopleFilter { mode, attributes: attributes.iter().map(|a| a.trim().to_owned()).collect() })
     }
 }
 
