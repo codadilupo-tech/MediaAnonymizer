@@ -41,7 +41,8 @@ Scarf, Crown, Tiara…), edit that list and run every step again.
   `--per-group` / `--negatives` for a smaller run.
 * Internet access to `storage.googleapis.com` (annotations),
   `open-images-dataset.s3.amazonaws.com` (images) and `download.pytorch.org`
-  (ImageNet weights of the backbone).
+  (ImageNet weights of the backbone). Without the last one, see
+  [Backbone weights without download.pytorch.org](#backbone-weights-without-downloadpytorchorg).
 
 ## Steps
 
@@ -79,6 +80,21 @@ threshold per accessory is the lowest one reaching that precision).
 The result to hand over for integration is `accessories.onnx` together with
 `runs/v1/METRICS.md` and `runs/v1/log.jsonl`.
 
+## Backbone weights without download.pytorch.org
+
+`train.py --backbone` accepts a torchvision `mobilenet_v3_large` state dict
+instead of downloading torchvision's ImageNet weights. Keras publishes the
+same network's ImageNet weights (Apache 2.0) on Google Cloud Storage;
+[`convert_keras_backbone.py`](convert_keras_backbone.py) converts them, and
+with `--verify` (needs `pip install tensorflow-cpu`) checks that the converted
+network reproduces Keras' features:
+
+```sh
+curl -O https://storage.googleapis.com/tensorflow/keras-applications/mobilenet_v3/weights_mobilenet_v3_large_224_1.0_float_no_top_v2.h5
+python convert_keras_backbone.py weights_mobilenet_v3_large_224_1.0_float_no_top_v2.h5 backbone.pt --verify
+python train.py --data data --out runs/v1 --backbone backbone.pt
+```
+
 ## How the dataset is built
 
 1. `download.py` streams the official box annotations and keeps faces and
@@ -108,7 +124,8 @@ The result to hand over for integration is `accessories.onnx` together with
 
 * Code in this folder: MIT OR Apache-2.0, like the rest of the project.
 * Model architecture: torchvision SSDlite / MobileNetV3 (BSD-3-Clause),
-  initialised from torchvision's ImageNet weights.
+  initialised from ImageNet weights (torchvision's, or Keras Applications'
+  converted, Apache 2.0).
 * Training data: [Open Images V7](https://storage.googleapis.com/openimages/web/index.html),
   annotations by Google LLC under CC BY 4.0; images listed as CC BY 2.0 by
   their individual authors. Images are downloaded for training only and are

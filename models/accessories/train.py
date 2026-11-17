@@ -1,9 +1,12 @@
 """Trains the accessory detector on the prepared head crops.
 
 Model: torchvision SSDlite320 with a MobileNetV3-Large backbone (BSD-3-Clause),
-initialised from ImageNet weights unless `--no-pretrained` (small, fast on a
-CPU at inference, exportable to ONNX). After each epoch the model is scored
-on the validation split and the best checkpoint is kept.
+small, fast on a CPU at inference and exportable to ONNX. The backbone starts
+from ImageNet weights: torchvision's by default, or a file given with
+`--backbone` (e.g. made by convert_keras_backbone.py when download.pytorch.org
+is unreachable); `--backbone none` starts from random weights. After each
+epoch the model is scored on the validation split and the best checkpoint is
+kept.
 
 Usage: python train.py --data data --out runs/v1 [--epochs 40] [--batch 32]
 """
@@ -15,26 +18,82 @@ import json
 import math
 import random
 import time
+from functools import partial
 from pathlib import Path
 
 import torch
 from PIL import Image
+from torch import nn
 from torch.utils.data import DataLoader, Dataset
 from torchvision import tv_tensors
-from torchvision.models import MobileNet_V3_Large_Weights
-from torchvision.models.detection import ssdlite320_mobilenet_v3_large
+from torchvision.models import MobileNet_V3_Large_Weights, mobilenet_v3_large
+from torchvision.models.detection import _utils as det_utils
+from torchvision.models.detection.anchor_utils import DefaultBoxGenerator
+from torchvision.models.detection.ssd import SSD
+from torchvision.models.detection.ssdlite import SSDLiteHead, _mobilenet_extractor, _normal_init
 from torchvision.transforms import v2 as T
 
 import evaluate
 from common import GROUPS, INPUT_SIZE, Sample, load_split
 
 
-def build_model(pretrained: bool) -> torch.nn.Module:
-    weights = MobileNet_V3_Large_Weights.IMAGENET1K_V1 if pretrained else None
-    model = ssdlite320_mobilenet_v3_large(
-        weights=None, weights_backbone=weights, num_classes=len(GROUPS) + 1, score_thresh=0.01, detections_per_img=20
+def build_model(backbone_state: dict | None = None, reduced_tail: bool | None = None) -> torch.nn.Module:
+    """SSDlite320 / MobileNetV3-Large, as torchvision's
+    `ssdlite320_mobilenet_v3_large`, with an explicit backbone.
+
+    `backbone_state` is a state dict of torchvision's `mobilenet_v3_large`
+    (ImageNet weights); `None` initialises it randomly. Like torchvision, a
+    random backbone uses the "reduced tail" variant; checkpoints record which
+    one they use, so that they can be rebuilt without any download.
+    """
+    if reduced_tail is None:
+        reduced_tail = backbone_state is None
+    norm = partial(nn.BatchNorm2d, eps=0.001, momentum=0.03)
+    backbone = mobilenet_v3_large(weights=None, norm_layer=norm, reduced_tail=reduced_tail)
+    if backbone_state is None:
+        _normal_init(backbone)
+    else:
+        # The ImageNet classifier is not used by the detector and may be absent.
+        missing, unexpected = backbone.load_state_dict(backbone_state, strict=False)
+        if unexpected or any(not k.startswith("classifier.") for k in missing):
+            raise ValueError(f"backbone weights do not fit: missing {missing}, unexpected {unexpected}")
+    backbone = _mobilenet_extractor(backbone, 6, norm)
+    size = (INPUT_SIZE, INPUT_SIZE)
+    anchors = DefaultBoxGenerator([[2, 3] for _ in range(6)], min_ratio=0.2, max_ratio=0.95)
+    channels = det_utils.retrieve_out_channels(backbone, size)
+    classes = len(GROUPS) + 1
+    return SSD(
+        backbone,
+        anchors,
+        size,
+        classes,
+        head=SSDLiteHead(channels, anchors.num_anchors_per_location(), classes, norm),
+        score_thresh=0.01,
+        nms_thresh=0.55,
+        detections_per_img=20,
+        topk_candidates=300,
+        # [0, 1] -> [-1, 1], what the backbone was trained with.
+        image_mean=[0.5, 0.5, 0.5],
+        image_std=[0.5, 0.5, 0.5],
     )
-    return model
+
+
+def backbone_weights(spec: str) -> dict | None:
+    """`imagenet` (torchvision download), `none`, or a state dict file."""
+    if spec == "none":
+        return None
+    if spec == "imagenet":
+        return MobileNet_V3_Large_Weights.IMAGENET1K_V1.get_state_dict(progress=True)
+    return torch.load(spec, map_location="cpu", weights_only=True)
+
+
+def load_checkpoint(path: Path) -> tuple[torch.nn.Module, dict]:
+    """A trained model (no download needed) and its checkpoint data."""
+    state = torch.load(path, map_location="cpu", weights_only=False)
+    model = build_model(reduced_tail=state.get("reduced_tail", True))
+    model.load_state_dict(state["model"])
+    model.eval()
+    return model, state
 
 
 class Crops(Dataset):
@@ -91,7 +150,10 @@ def main() -> None:
     ap.add_argument("--batch", type=int, default=32)
     ap.add_argument("--lr", type=float, default=1e-3)
     ap.add_argument("--workers", type=int, default=4)
-    ap.add_argument("--no-pretrained", action="store_true", help="random backbone (no ImageNet download)")
+    ap.add_argument(
+        "--backbone", default="imagenet", help="imagenet (torchvision download), none, or a state dict file"
+    )
+    ap.add_argument("--no-pretrained", action="store_true", help="same as --backbone none")
     ap.add_argument("--limit", type=int, default=0, help="use at most N crops per split (quick tests)")
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args()
@@ -115,7 +177,9 @@ def main() -> None:
     )
     print(f"device {dev}; {len(train_samples):,} train crops, {len(val_samples):,} validation crops")
 
-    model = build_model(pretrained=not args.no_pretrained).to(dev)
+    backbone = backbone_weights("none" if args.no_pretrained else args.backbone)
+    reduced_tail = backbone is None
+    model = build_model(backbone, reduced_tail).to(dev)
     params = [p for p in model.parameters() if p.requires_grad]
     opt = torch.optim.AdamW(params, lr=args.lr, weight_decay=1e-4)
     steps = max(1, args.epochs * len(train_loader))
@@ -152,6 +216,7 @@ def main() -> None:
         print(f"epoch {epoch}: loss {entry['loss']:.3f}, val mAP@0.5 {score:.3f} ({entry['seconds']}s)", flush=True)
         state = {
             "model": model.state_dict(),
+            "reduced_tail": reduced_tail,
             "epoch": epoch,
             "metrics": metrics,
             "args": vars(args) | {"data": str(args.data), "out": str(args.out)},

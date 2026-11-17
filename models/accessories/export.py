@@ -31,7 +31,7 @@ import torch
 
 from common import GROUPS, INPUT_SIZE, crop_geometry, group_names, load_split
 from evaluate import crop_tensor
-from train import build_model
+from train import load_checkpoint
 
 
 class Wrapper(torch.nn.Module):
@@ -55,10 +55,7 @@ def main() -> None:
     ap.add_argument("--version", default="1")
     args = ap.parse_args()
 
-    state = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
-    model = build_model(pretrained=False)
-    model.load_state_dict(state["model"])
-    model.eval()
+    model, state = load_checkpoint(args.checkpoint)
     wrapper = Wrapper(model).eval()
 
     dummy = torch.rand(3, INPUT_SIZE, INPUT_SIZE)

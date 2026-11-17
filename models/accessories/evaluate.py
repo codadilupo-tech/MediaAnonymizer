@@ -198,11 +198,9 @@ def main() -> None:
     else:
         import torch
 
-        from train import build_model
+        from train import load_checkpoint
 
-        state = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
-        model = build_model(pretrained=False)
-        model.load_state_dict(state["model"])
+        model, _ = load_checkpoint(args.checkpoint)
         predict = TorchPredictor(model, torch.device("cpu"))
         title = f"{args.checkpoint} on the {args.split} split"
     m = evaluate(predict, root, samples, args.target_precision)
