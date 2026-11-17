@@ -154,6 +154,7 @@ def main() -> None:
         "--backbone", default="imagenet", help="imagenet (torchvision download), none, or a state dict file"
     )
     ap.add_argument("--no-pretrained", action="store_true", help="same as --backbone none")
+    ap.add_argument("--resume", type=Path, help="continue from a checkpoint (e.g. runs/v1/last.pt)")
     ap.add_argument("--limit", type=int, default=0, help="use at most N crops per split (quick tests)")
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args()
@@ -177,9 +178,17 @@ def main() -> None:
     )
     print(f"device {dev}; {len(train_samples):,} train crops, {len(val_samples):,} validation crops")
 
-    backbone = backbone_weights("none" if args.no_pretrained else args.backbone)
-    reduced_tail = backbone is None
-    model = build_model(backbone, reduced_tail).to(dev)
+    resumed = torch.load(args.resume, map_location="cpu", weights_only=False) if args.resume else None
+    if resumed:
+        # The backbone weights are in the checkpoint: nothing to download.
+        reduced_tail = resumed.get("reduced_tail", True)
+        model = build_model(reduced_tail=reduced_tail)
+        model.load_state_dict(resumed["model"])
+        model.to(dev)
+    else:
+        backbone = backbone_weights("none" if args.no_pretrained else args.backbone)
+        reduced_tail = backbone is None
+        model = build_model(backbone, reduced_tail).to(dev)
     params = [p for p in model.parameters() if p.requires_grad]
     opt = torch.optim.AdamW(params, lr=args.lr, weight_decay=1e-4)
     steps = max(1, args.epochs * len(train_loader))
@@ -191,9 +200,26 @@ def main() -> None:
     use_amp = dev.type == "cuda"
     scaler = torch.amp.GradScaler(enabled=use_amp)
 
-    best = -1.0
+    best, first = -1.0, 1
+    if resumed:
+        first = resumed["epoch"] + 1
+        best_file = args.out / "best.pt"
+        best = (
+            torch.load(best_file, map_location="cpu", weights_only=False)["metrics"]["mean_ap50"]
+            if best_file.exists()
+            else resumed["metrics"]["mean_ap50"]
+        )
+        if "optimizer" in resumed:
+            opt.load_state_dict(resumed["optimizer"])
+            sched.load_state_dict(resumed["scheduler"])
+            scaler.load_state_dict(resumed["scaler"])
+        else:
+            # Older checkpoint: fresh optimizer moments, schedule moved on.
+            for _ in range(resumed["epoch"] * len(train_loader)):
+                sched.step()
+        print(f"resuming after epoch {resumed['epoch']} (best validation mAP@0.5 so far {best:.3f})")
     log = (args.out / "log.jsonl").open("a")
-    for epoch in range(1, args.epochs + 1):
+    for epoch in range(first, args.epochs + 1):
         model.train()
         started, total, n = time.time(), 0.0, 0
         for images, targets in train_loader:
@@ -219,6 +245,9 @@ def main() -> None:
             "reduced_tail": reduced_tail,
             "epoch": epoch,
             "metrics": metrics,
+            "optimizer": opt.state_dict(),
+            "scheduler": sched.state_dict(),
+            "scaler": scaler.state_dict(),
             "args": vars(args) | {"data": str(args.data), "out": str(args.out)},
         }
         torch.save(state, args.out / "last.pt")
