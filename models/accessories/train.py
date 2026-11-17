@@ -155,6 +155,9 @@ def main() -> None:
     )
     ap.add_argument("--no-pretrained", action="store_true", help="same as --backbone none")
     ap.add_argument("--resume", type=Path, help="continue from a checkpoint (e.g. runs/v1/last.pt)")
+    ap.add_argument(
+        "--save-every", type=int, default=100, help="also save last.pt every N steps within an epoch (0: off)"
+    )
     ap.add_argument("--limit", type=int, default=0, help="use at most N crops per split (quick tests)")
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args()
@@ -200,9 +203,14 @@ def main() -> None:
     use_amp = dev.type == "cuda"
     scaler = torch.amp.GradScaler(enabled=use_amp)
 
-    best, first = -1.0, 1
+    best, first, skip, carried = -1.0, 1, 0, (0.0, 0)
+    metrics: dict = {}
     if resumed:
         first = resumed["epoch"] + 1
+        # Steps already done in an interrupted epoch, and their loss.
+        skip = resumed.get("step", 0)
+        carried = resumed.get("partial_loss", (0.0, 0))
+        metrics = resumed["metrics"]
         best_file = args.out / "best.pt"
         best = (
             torch.load(best_file, map_location="cpu", weights_only=False)["metrics"]["mean_ap50"]
@@ -215,14 +223,41 @@ def main() -> None:
             scaler.load_state_dict(resumed["scaler"])
         else:
             # Older checkpoint: fresh optimizer moments, schedule moved on.
-            for _ in range(resumed["epoch"] * len(train_loader)):
+            for _ in range(resumed["epoch"] * len(train_loader) + skip):
                 sched.step()
-        print(f"resuming after epoch {resumed['epoch']} (best validation mAP@0.5 so far {best:.3f})")
+        print(
+            f"resuming after epoch {resumed['epoch']}, step {skip} (best validation mAP@0.5 so far {best:.3f})",
+            flush=True,
+        )
+
+    def checkpoint(epoch: int, step: int, partial: tuple[float, int], name: str = "last.pt") -> dict:
+        state = {
+            "model": model.state_dict(),
+            "reduced_tail": reduced_tail,
+            "epoch": epoch,  # completed epochs
+            "step": step,  # steps done in the next one
+            "partial_loss": partial,
+            "metrics": metrics,  # of the last completed epoch
+            "optimizer": opt.state_dict(),
+            "scheduler": sched.state_dict(),
+            "scaler": scaler.state_dict(),
+            "args": vars(args) | {"data": str(args.data), "out": str(args.out), "resume": str(args.resume)},
+        }
+        # Written then renamed, so an interruption never leaves a broken file.
+        tmp = args.out / f".{name}.tmp"
+        torch.save(state, tmp)
+        tmp.replace(args.out / name)
+        return state
+
     log = (args.out / "log.jsonl").open("a")
     for epoch in range(first, args.epochs + 1):
         model.train()
-        started, total, n = time.time(), 0.0, 0
-        for images, targets in train_loader:
+        started, (total, n) = time.time(), carried
+        step, todo = skip, len(train_loader) - skip
+        skip, carried = 0, (0.0, 0)
+        for b, (images, targets) in enumerate(train_loader):
+            if b >= todo:
+                break
             images = [im.to(dev) for im in images]
             targets = [{k: v.to(dev) for k, v in t.items()} for t in targets]
             with torch.autocast(dev.type, enabled=use_amp):
@@ -233,27 +268,19 @@ def main() -> None:
             scaler.step(opt)
             scaler.update()
             sched.step()
-            total, n = total + loss.item(), n + 1
+            total, n, step = total + loss.item(), n + 1, step + 1
+            if args.save_every and step % args.save_every == 0 and step < len(train_loader):
+                checkpoint(epoch - 1, step, (total, n))
         metrics = evaluate.evaluate(evaluate.TorchPredictor(model, dev), val_root, val_samples)
         score = metrics["mean_ap50"]
         entry = {"epoch": epoch, "loss": total / max(n, 1), "seconds": round(time.time() - started), **metrics}
         log.write(json.dumps(entry) + "\n")
         log.flush()
         print(f"epoch {epoch}: loss {entry['loss']:.3f}, val mAP@0.5 {score:.3f} ({entry['seconds']}s)", flush=True)
-        state = {
-            "model": model.state_dict(),
-            "reduced_tail": reduced_tail,
-            "epoch": epoch,
-            "metrics": metrics,
-            "optimizer": opt.state_dict(),
-            "scheduler": sched.state_dict(),
-            "scaler": scaler.state_dict(),
-            "args": vars(args) | {"data": str(args.data), "out": str(args.out)},
-        }
-        torch.save(state, args.out / "last.pt")
+        checkpoint(epoch, 0, (0.0, 0))
         if score > best:
             best = score
-            torch.save(state, args.out / "best.pt")
+            checkpoint(epoch, 0, (0.0, 0), "best.pt")
     print(f"best validation mAP@0.5: {best:.3f} -> {args.out / 'best.pt'}")
 
 
