@@ -3,7 +3,7 @@
 The model classifies the *person crop* around a face found by YuNet: a
 square centred on the face, four face-heights wide, starting a little above
 the head, so that it shows the headwear, the face and the upper body
-(uniform, shield). The geometry below is part of the model's contract:
+(uniform, shield, clothing). The geometry below is part of the model's contract:
 MediaAnonymizer builds the same crop around every face, so any change here
 requires retraining. It is stored in the exported model's metadata.
 """
@@ -35,7 +35,9 @@ class Attribute:
     """One attribute predicted by the model.
 
     `group` is `role` for the mutually exclusive kinds of person (exactly one
-    applies) and `gear` for things a person wears or carries (any number).
+    applies), `gear` for things a person wears on the head or face or
+    carries, and `clothing` for upper-body garments (any number of gear and
+    clothing items apply).
     """
 
     name: str
@@ -46,6 +48,22 @@ class Attribute:
     commons: list[str] = field(default_factory=list)
     # Accessory group of the Open Images crops of `models/accessories`.
     openimages: str | None = None
+    # Open Images boxable classes whose boxes, on the neck and chest of a
+    # face, show this clothing item (see `download_openimages.py`). Gear uses
+    # the head-crop boxes of `models/accessories` instead (`openimages`).
+    openimages_classes: list[str] = field(default_factory=list)
+    # Open Images classes whose verified absence on a person shows that this
+    # attribute is absent (default: `openimages_classes`). Open Images'
+    # "Shirt" covers T-shirts and button-up shirts alike: no shirt on a
+    # person means neither, but a shirt box does not tell which.
+    openimages_negative_by: list[str] | None = None
+    # Attributes whose (reliable) presence on a person shows that this one is
+    # absent: someone in a suit is not wearing a hoodie. They provide the
+    # reliable negatives of clothing that Open Images does not annotate.
+    excluded_by: list[str] = field(default_factory=list)
+    # Region of `REGIONS` where the application measures the colour of this
+    # attribute, or None when its colour cannot be measured.
+    region: str | None = None
 
 
 ATTRIBUTES: list[Attribute] = [
@@ -89,9 +107,12 @@ ATTRIBUTES: list[Attribute] = [
         "helmet",
         "Helmet",
         "gear",
-        ["a photo of a person wearing a helmet", "a photo of a person wearing a riot helmet with a visor"],
-        ["Police helmets", "Riot helmets", "Combat helmets"],
+        ["a photo of a person wearing a helmet", "a photo of a person wearing a riot helmet with a visor",
+         "a photo of a person wearing a bicycle helmet", "a photo of a person wearing a hard hat"],
+        ["Police helmets", "Riot helmets", "Combat helmets", "Men wearing helmets", "Women wearing helmets",
+         "People wearing motorcycle helmets", "Men wearing hard hats", "Women wearing hard hats", "People with hard hats"],
         openimages="helmet",
+        region="head",
     ),
     Attribute(
         "shield",
@@ -106,6 +127,7 @@ ATTRIBUTES: list[Attribute] = [
         "gear",
         ["a photo of a person wearing a balaclava", "a photo of a masked person with only the eyes visible"],
         ["Balaclavas", "Black bloc"],
+        region="lower_face",
     ),
     Attribute(
         "face_mask",
@@ -113,14 +135,17 @@ ATTRIBUTES: list[Attribute] = [
         "gear",
         ["a photo of a person wearing a surgical face mask", "a photo of a person wearing a medical mask"],
         ["Face masks", "Face masks during the COVID-19 pandemic", "People wearing face masks during the COVID-19 pandemic"],
+        region="lower_face",
     ),
     Attribute(
         "hat",
         "Hat or cap",
         "gear",
         ["a photo of a person wearing a hat", "a photo of a person wearing a cap"],
-        ["Men wearing caps", "Men wearing hats", "Women wearing hats"],
+        ["Men wearing caps", "Men wearing hats", "Women wearing hats", "People wearing baseball caps"],
         openimages="hat",
+        excluded_by=["helmet"],
+        region="head",
     ),
     Attribute(
         "glasses",
@@ -129,6 +154,7 @@ ATTRIBUTES: list[Attribute] = [
         ["a photo of a person wearing glasses", "a photo of a person wearing eyeglasses"],
         ["People with glasses", "Men wearing eyeglasses", "Women wearing eyeglasses"],
         openimages="glasses",
+        region="eyes",
     ),
     Attribute(
         "sunglasses",
@@ -137,6 +163,117 @@ ATTRIBUTES: list[Attribute] = [
         ["a photo of a person wearing sunglasses", "a photo of a person wearing dark sunglasses"],
         ["Women wearing sunglasses", "Men wearing sunglasses"],
         openimages="sunglasses",
+        region="eyes",
+    ),
+    # Upper-body clothing: what the person crop shows below the face (it ends
+    # about two face heights below the chin, so trousers, skirts and shoes
+    # are out of reach).
+    Attribute(
+        "t_shirt",
+        "T-shirt",
+        "clothing",
+        ["a photo of a person wearing a t-shirt", "a photo of a person in a short-sleeved t-shirt"],
+        ["Men wearing T-shirts", "Women wearing T-shirts", "People wearing T-shirts"],
+        openimages_negative_by=["Shirt"],
+        excluded_by=["suit", "tie", "dress", "coat"],
+        region="torso",
+    ),
+    Attribute(
+        "shirt",
+        "Shirt",
+        "clothing",
+        ["a photo of a person wearing a button-up shirt", "a photo of a person wearing a collared shirt"],
+        ["Men wearing shirts with buttons", "Dress shirts", "Men wearing checkered shirts", "Men wearing striped shirts",
+         "Women wearing shirts"],
+        openimages_negative_by=["Shirt"],
+        excluded_by=["t_shirt", "hoodie", "dress"],
+        region="torso",
+    ),
+    Attribute(
+        "suit",
+        "Suit or blazer",
+        "clothing",
+        ["a photo of a person wearing a suit", "a photo of a person wearing a blazer", "a photo of a businessman in a suit"],
+        ["Men wearing suits", "Women wearing suits", "Blazers"],
+        openimages_classes=["Suit"],
+        excluded_by=["t_shirt", "hoodie", "hi_vis_vest", "dress"],
+        region="torso",
+    ),
+    Attribute(
+        "jacket",
+        "Jacket",
+        "clothing",
+        ["a photo of a person wearing a jacket", "a photo of a person wearing a leather jacket",
+         "a photo of a person wearing a zip-up jacket"],
+        ["Men wearing jackets", "Women wearing jackets", "Leather jackets", "Denim jackets", "Puffer jackets"],
+        openimages_classes=["Jacket"],
+        region="torso",
+    ),
+    Attribute(
+        "coat",
+        "Coat",
+        "clothing",
+        ["a photo of a person wearing a coat", "a photo of a person wearing a long winter coat"],
+        ["Men wearing coats", "Women wearing coats"],
+        openimages_classes=["Coat"],
+        excluded_by=["t_shirt"],
+        region="torso",
+    ),
+    Attribute(
+        "hoodie",
+        "Hoodie",
+        "clothing",
+        ["a photo of a person wearing a hoodie", "a photo of a person wearing a hooded sweatshirt"],
+        ["Men wearing hoodies", "Women wearing hoodies", "People wearing hoodies"],
+        excluded_by=["suit", "tie", "dress"],
+        region="torso",
+    ),
+    Attribute(
+        "sweater",
+        "Sweater",
+        "clothing",
+        ["a photo of a person wearing a knitted sweater", "a photo of a person wearing a jumper or cardigan"],
+        ["Men wearing sweaters", "Women wearing sweaters", "Cardigans"],
+        excluded_by=["t_shirt"],
+        region="torso",
+    ),
+    Attribute(
+        "dress",
+        "Dress",
+        "clothing",
+        ["a photo of a woman wearing a dress", "a photo of a person wearing a dress"],
+        ["Women wearing dresses"],
+        openimages_classes=["Dress"],
+        excluded_by=["suit", "tie", "t_shirt", "hoodie"],
+        region="torso",
+    ),
+    Attribute(
+        "hi_vis_vest",
+        "Hi-vis vest",
+        "clothing",
+        ["a photo of a person wearing a high-visibility vest", "a photo of a worker in a fluorescent safety vest"],
+        ["High-visibility vests", "High-visibility work clothing"],
+        excluded_by=["suit", "dress", "tie"],
+        region="torso",
+    ),
+    Attribute(
+        "tie",
+        "Tie",
+        "clothing",
+        ["a photo of a person wearing a necktie", "a photo of a man wearing a tie"],
+        ["Men wearing neckties"],
+        openimages_classes=["Tie"],
+        excluded_by=["t_shirt", "hoodie", "dress"],
+        region="neck",
+    ),
+    Attribute(
+        "scarf",
+        "Scarf",
+        "clothing",
+        ["a photo of a person wearing a scarf", "a photo of a person with a scarf around the neck"],
+        ["Men wearing scarves", "Women wearing scarves"],
+        openimages_classes=["Scarf"],
+        region="neck",
     ),
 ]
 
@@ -149,6 +286,31 @@ SKIP_SUBCATEGORY = [
     "statue", "sculpture", "postcard", "document", "video", "audio", "horse", "dog", "band", "music", "parade ground",
     "weapon", "gun", "rifle", "tank", "ship", "motorcycle", "bicycle", "equipment", "uniform buttons",
 ]
+
+
+# Regions where the application measures colours, relative to the face box
+# (x, y, w, h): (x0, y0, x1, y1) in face heights, x from the centre of the
+# face, y from its top. They are stored in the exported model; the colour of
+# an attribute is only read for people who have it.
+REGIONS: dict[str, tuple[float, float, float, float]] = {
+    # Above the forehead: the crown of a hat or a helmet.
+    "head": (-0.45, -0.5, 0.45, -0.03),
+    # Eye line: lenses and frames.
+    "eyes": (-0.4, 0.28, 0.4, 0.48),
+    # Mouth and chin: masks and balaclavas.
+    "lower_face": (-0.3, 0.62, 0.3, 0.95),
+    # Below the chin: tie, scarf, collar.
+    "neck": (-0.25, 1.1, 0.25, 1.8),
+    # Chest: the outermost upper-body garment.
+    "torso": (-0.7, 1.45, 0.7, 2.6),
+}
+
+# Groups scored with a sigmoid (any number apply); roles use a softmax.
+MULTI_LABEL = ("gear", "clothing")
+
+
+def openimages_negative_by(a: Attribute) -> list[str]:
+    return a.openimages_classes if a.openimages_negative_by is None else a.openimages_negative_by
 
 
 def names() -> list[str]:
@@ -181,6 +343,11 @@ def crop_geometry() -> dict:
         "fill": list(FILL),
         "input": "RGB float32 NCHW, (pixel/255 - mean) / std, square crop resized to input_size (bicubic)",
     }
+
+
+def region_geometry() -> dict:
+    """The colour regions, stored in the exported model."""
+    return {name: list(box) for name, box in REGIONS.items()}
 
 
 def data_dir(root: Path, source: str) -> Path:
