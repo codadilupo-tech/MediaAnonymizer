@@ -2,9 +2,11 @@
 
 Input `crops`: float32 `[N, 3, 224, 224]`, the person crops normalised as
 described by `common.crop_geometry()`. Output `scores`: float32 `[N, K]` in
-0..1, one column per attribute (softmax over the roles, sigmoid for gear).
+0..1, one column per attribute (softmax over the roles, sigmoid for gear and
+clothing).
 
-The attribute list, thresholds, crop geometry and attribution are stored in
+The attribute list, thresholds, crop geometry, colour regions and
+attribution are stored in
 the model's metadata (`mediaanon.attributes`, JSON), which is all the
 application needs. The export is checked against PyTorch, then measured on
 the test split, never seen while training.
@@ -24,7 +26,7 @@ import onnxruntime as ort
 import torch
 import torch.nn.functional as F
 
-from common import ATTRIBUTES, CLIP_MODEL, CLIP_PRETRAINED, INPUT_SIZE, crop_geometry
+from common import ATTRIBUTES, CLIP_MODEL, CLIP_PRETRAINED, INPUT_SIZE, crop_geometry, region_geometry
 from train import ROLE, average_precision, load_clip, to_tensor
 
 ATTRIBUTION = (
@@ -73,13 +75,16 @@ def main() -> None:
         tmp.unlink()
 
     meta = {
-        "version": 1,
+        "version": 2,
         "attributes": [
             {"name": a.name, "label": a.label, "group": a.group,
-             "present": head["thresholds"][a.name]["present"], "absent": head["thresholds"][a.name]["absent"]}
+             "present": head["thresholds"][a.name]["present"], "absent": head["thresholds"][a.name]["absent"],
+             **({"region": a.region} if a.region else {})}
             for a in ATTRIBUTES
         ],
         "crop": crop_geometry(),
+        # Where the application measures the colour of an attribute.
+        "regions": region_geometry(),
         "backbone": f"{CLIP_MODEL} {CLIP_PRETRAINED}",
         "attribution": ATTRIBUTION,
     }

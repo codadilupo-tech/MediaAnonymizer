@@ -1,13 +1,15 @@
 """Trains the attribute heads on frozen CLIP image embeddings.
 
 1. Every crop of `prepare.py` is embedded once with the CLIP image tower
-   (cached in `<data>/embeddings-<split>.pt`). Training crops are embedded a
+   (cached by file name in `<data>/embeddings-<split>.pt`, so that adding
+   pictures or attributes only embeds the new crops). Training crops are embedded a
    second time after a random downscale to 32–96 pixels and back, which
    imitates small faces in video frames.
 2. A linear layer maps the embedding to one logit per attribute. It starts
    from CLIP's zero-shot classifier (the text embeddings of the prompts of
-   `common.ATTRIBUTES`; for gear, "wearing X" minus "a person") and is
-   trained with a softmax over the roles and a sigmoid per gear item, with
+   `common.ATTRIBUTES`; for gear and clothing, "wearing X" minus "a person")
+   and is trained with a softmax over the roles and a sigmoid per gear or
+   clothing item, with
    weight decay *towards* that start, so attributes with few or noisy
    examples stay close to CLIP's own judgement.
 3. On the validation split, two thresholds are chosen per attribute:
@@ -57,37 +59,52 @@ def to_tensor(img: Image.Image) -> torch.Tensor:
 
 
 def degrade(img: Image.Image, rng: random.Random) -> Image.Image:
+    """Downscale to 32-96 pixels and back, like a small face in a video."""
     s = rng.randint(32, 96)
     small = img.resize((s, s), Image.Resampling.BOX)
     return small.resize(img.size, Image.Resampling.BICUBIC)
 
 
 @torch.no_grad()
-def embed(model, crops: Path, samples: list[dict], dev, degraded: bool, seed: int = 0) -> torch.Tensor:
-    rng = random.Random(seed)
+def embed(model, crops: Path, files: list[str], dev, degraded: bool, save=None) -> torch.Tensor:
     out = []
-    for i in range(0, len(samples), 128):
+    for i in range(0, len(files), 128):
         batch = []
-        for s in samples[i : i + 128]:
-            img = Image.open(crops / s["file"]).convert("RGB")
+        for f in files[i : i + 128]:
+            img = Image.open(crops / f).convert("RGB")
+            # One seed per file: the degradation does not depend on the order.
+            rng = random.Random(f)
             batch.append(to_tensor(degrade(img, rng) if degraded else img))
         e = model.encode_image(torch.stack(batch).to(dev))
         out.append(F.normalize(e.float(), dim=-1).cpu())
         if i % 2560 == 0:
-            print(f"    {i}/{len(samples)}", flush=True)
-    return torch.cat(out)
+            print(f"    {i}/{len(files)}", flush=True)
+            if save is not None and out:
+                save(files[: i + len(batch)], torch.cat(out))
+    return torch.cat(out) if out else torch.zeros(0, 512)
 
 
 def cached(model, data: Path, split: str, samples, dev, degraded: bool) -> torch.Tensor:
+    """Embeddings of `samples`, computed only for crops not in the cache."""
     path = data / f"embeddings-{split}{'-degraded' if degraded else ''}.pt"
+    cache: dict[str, torch.Tensor] = {}
     if path.exists():
-        e = torch.load(path)
-        if len(e) == len(samples):
-            return e
-    print(f"  embedding {split}{' (degraded)' if degraded else ''}: {len(samples)} crops", flush=True)
-    e = embed(model, data / "crops", samples, dev, degraded)
-    torch.save(e, path)
-    return e
+        stored = torch.load(path)
+        if isinstance(stored, dict):
+            cache = dict(zip(stored["files"], stored["embeddings"]))
+    files = [s["file"] for s in samples]
+    todo = sorted({f for f in files if f not in cache})
+    if todo:
+        print(f"  embedding {split}{' (degraded)' if degraded else ''}: {len(todo)} new crops", flush=True)
+
+        def save(done: list[str], e: torch.Tensor) -> None:
+            merged = {**cache, **dict(zip(done, e))}
+            torch.save({"files": list(merged), "embeddings": torch.stack(list(merged.values()))}, path)
+
+        new = embed(model, data / "crops", todo, dev, degraded, save)
+        cache.update(zip(todo, new))
+        save([], torch.zeros(0, 512))
+    return torch.stack([cache[f] for f in files])
 
 
 @torch.no_grad()
@@ -100,7 +117,7 @@ def zero_shot(model, tokenizer, dev) -> tuple[torch.Tensor, torch.Tensor]:
 
     scale = model.logit_scale.exp().item()
     person = text(["a photo of a person", "a photo of a man", "a photo of a woman"])
-    w = torch.stack([text(a.prompts) - (person if a.group == "gear" else 0) for a in ATTRIBUTES]) * scale
+    w = torch.stack([text(a.prompts) - (person if a.group != "role" else 0) for a in ATTRIBUTES]) * scale
     return w, torch.zeros(len(ATTRIBUTES))
 
 
