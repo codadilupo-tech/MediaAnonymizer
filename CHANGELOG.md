@@ -6,6 +6,13 @@ All notable changes are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- Video cuts: the audio is trimmed with `atrim` + `concat` instead of
+  `aselect`. The cut audio is now sample-accurate, and it is trimmed at all
+  with FFmpeg builds whose `aselect` passes every frame through (Ubuntu
+  26.04's FFmpeg 8.0.1, used by the `ubuntu-latest` CI runner).
+
 ### Changed
 
 - GUI: the settings of the video section under the playhead are edited in the
