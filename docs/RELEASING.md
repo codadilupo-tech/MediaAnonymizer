@@ -6,9 +6,12 @@ creates a **draft** release, attaches the files and then publishes it.
 
 The draft-first order is required by *immutable releases* (repository
 *Settings → General → Releases*): once a release is published, no file can be
-added to it. **Do not publish the release yourself before the workflow has
-run**: it would have no assets and could not get any (the workflow stops with
-an error right away in that case).
+added to it. Without that setting, a release you publish yourself from the
+GitHub UI (which also pushes the tag and starts the workflow) works too: the
+files are attached to it when the builds finish. With immutable releases on,
+**do not publish the release yourself before the workflow has run**: it would
+have no assets and could not get any (the workflow stops with an error right
+away in that case).
 
 ## Steps
 

@@ -5,7 +5,8 @@
 # The release is created as a *draft*, the files are attached, and only then
 # is it published. This is required with immutable releases (a repository
 # setting): a published release can no longer receive assets. A draft you
-# prepared yourself for the tag (with your own notes) is used as is.
+# prepared yourself for the tag (with your own notes) is used as is, and so is
+# a release you already published, unless it is immutable.
 #
 #   macOS    MediaAnonymizer-<v>-macos-arm64.dmg      (.app, Apple silicon)
 #            mediaanon-<v>-macos-arm64.tar.gz          (CLI)
@@ -101,13 +102,20 @@ jobs:
           if [ "$crate" != "$version" ]; then
             echo "::warning::release tag $TAG does not match the workspace version $crate in Cargo.toml"
           fi
-          # Fail now rather than after the builds: assets can only be added
-          # to a draft (published releases may be immutable).
-          if [ "$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft 2>/dev/null)" = "false" ]; then
-            echo "::error::release $TAG is already published, so no assets can be attached to it." \
-              "Push the tag (or run this workflow) without publishing a release first, or save the release as a draft."
-            exit 1
-          fi
+          # Fail now rather than after the builds if the release is
+          # published *and* immutable: no asset can be added to it. A
+          # published release that is not immutable (e.g. one published from
+          # the GitHub UI, which also pushes the tag) is filled in as is.
+          state=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" \
+            --jq 'if .draft then "draft" elif .immutable then "immutable" else "published" end' 2>/dev/null || echo missing)
+          case "$state" in
+            immutable)
+              echo "::error::release $TAG is already published and immutable, so no assets can be attached to it." \
+                "Delete it (and the tag), then push the tag or run this workflow without publishing the release first," \
+                "or save the release as a draft."
+              exit 1 ;;
+            published) echo "::notice::release $TAG is already published: the files will be attached to it" ;;
+          esac
 
   linux:
     name: Linux (${{ matrix.arch }})
@@ -430,11 +438,13 @@ jobs:
             /^## \[/ { if (on) exit; on = index($0, head) == 1; next }
             on' CHANGELOG.md > "$RUNNER_TEMP/notes.md"
           [ -s "$RUNNER_TEMP/notes.md" ] || echo "See CHANGELOG.md." > "$RUNNER_TEMP/notes.md"
-          draft=$(gh release view "$TAG" --json isDraft --jq .isDraft 2>/dev/null || echo missing)
-          case "$draft" in
+          state=$(gh api "repos/$GH_REPO/releases/tags/$TAG" \
+            --jq 'if .draft then "draft" elif .immutable then "immutable" else "published" end' 2>/dev/null || echo missing)
+          case "$state" in
             missing) gh release create "$TAG" --draft --target "$SHA" --title "MediaAnonymizer ${TAG#v}" --notes-file "$RUNNER_TEMP/notes.md" ;;
-            true) echo "using the existing draft release $TAG" ;;
-            *) echo "::error::release $TAG is already published; assets can only be attached to a draft"; exit 1 ;;
+            draft) echo "using the existing draft release $TAG" ;;
+            published) echo "attaching the files to the published release $TAG" ;;
+            *) echo "::error::release $TAG is published and immutable; assets can only be attached to a draft"; exit 1 ;;
           esac
           gh release upload "$TAG" assets/* --clobber
-          gh release edit "$TAG" --draft=false
+          [ "$state" = published ] || gh release edit "$TAG" --draft=false
