@@ -588,20 +588,64 @@ fn cut_audio_codec(container: &str) -> (&'static str, &'static [&'static str], b
     }
 }
 
-/// `aselect` expression keeping the audio outside the cut ranges (seconds of
-/// the source timeline).
-fn keep_audio_expr(cuts: &[(f64, f64)], offset: f64) -> String {
-    let terms: Vec<String> = cuts
-        .iter()
-        .map(|&(a, b)| {
-            if b.is_finite() {
-                format!("between(t,{:.6},{:.6})", a + offset, b + offset)
-            } else {
-                format!("gte(t,{:.6})", a + offset)
+/// Audio filtergraph keeping the audio outside the cut ranges (seconds of
+/// the source timeline, shifted by `offset`): one `atrim` per kept segment,
+/// joined with `concat`.
+///
+/// `aselect` is not used: it is not sample-accurate (it keeps or drops whole
+/// audio frames) and some FFmpeg builds ignore its expression entirely
+/// (Ubuntu 26.04's 8.0.1 passes every frame through, even with `aselect=0`).
+fn keep_audio_filter(cuts: &[(f64, f64)], offset: f64) -> String {
+    let mut segments: Vec<(Option<f64>, Option<f64>)> = Vec::new();
+    let mut from: Option<f64> = None;
+    for &(a, b) in cuts {
+        let a = a + offset;
+        // A cut at the very start leaves nothing before it.
+        if from.is_some() || a > offset {
+            segments.push((from, Some(a)));
+        }
+        if !b.is_finite() {
+            from = None;
+            break;
+        }
+        from = Some(b + offset);
+    }
+    if let Some(f) = from {
+        segments.push((Some(f), None));
+    } else if cuts.is_empty() {
+        segments.push((None, None));
+    }
+    let trim = |(start, end): (Option<f64>, Option<f64>)| {
+        let mut opts = Vec::new();
+        if let Some(s) = start {
+            opts.push(format!("start={s:.6}"));
+        }
+        if let Some(e) = end {
+            opts.push(format!("end={e:.6}"));
+        }
+        format!("atrim={},asetpts=PTS-STARTPTS", opts.join(":"))
+    };
+    match segments.len() {
+        // Everything is cut: the encoder is stopped before it writes
+        // anything, but the graph must still be valid.
+        0 => "atrim=end=0".into(),
+        1 => trim(segments[0]),
+        n => {
+            let mut g = format!("asplit={n}");
+            for i in 0..n {
+                g.push_str(&format!("[k{i}]"));
             }
-        })
-        .collect();
-    format!("not({})", terms.join("+"))
+            for (i, seg) in segments.iter().enumerate() {
+                g.push_str(&format!(";[k{i}]{}[s{i}]", trim(*seg)));
+            }
+            g.push(';');
+            for i in 0..n {
+                g.push_str(&format!("[s{i}]"));
+            }
+            g.push_str(&format!("concat=n={n}:v=0:a=1"));
+            g
+        }
+    }
 }
 
 /// Decode → (detect + paint faces) / (draw timestamp) / (drop cut frames) → encode.
@@ -722,7 +766,7 @@ fn reencode(
     encc.args(["-c", "copy", "-c:v", &enc.name]).args(&enc.args).args(&color_args);
     if !cuts.is_empty() && probe.streams.iter().any(|s| s.codec_type == "audio") {
         let (codec, args, lossless) = cut_audio_codec(container);
-        encc.args(["-af", &format!("aselect='{}',asetpts=N/SR/TB", keep_audio_expr(&cuts, start))]);
+        encc.args(["-af", &keep_audio_filter(&cuts, start)]);
         encc.args(["-c:a", codec]).args(args);
         notes.push(format!(
             "audio re-encoded with {codec} ({}) to apply the cuts",
@@ -1095,5 +1139,27 @@ fn paint_frame(frame: &mut Frame, l: &Layout, faces: &[Face], fopts: Option<&Fac
     } else {
         let len = l.frame_bytes;
         paint_planes!(frame.bytes_mut(len), u8, 1)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::keep_audio_filter;
+
+    #[test]
+    fn keep_audio_filter_trims_around_the_cuts() {
+        assert_eq!(keep_audio_filter(&[(0.0, f64::INFINITY)], 0.0), "atrim=end=0");
+        assert_eq!(keep_audio_filter(&[(0.0, 0.5)], 0.0), "atrim=start=0.500000,asetpts=PTS-STARTPTS");
+        assert_eq!(keep_audio_filter(&[(1.0, f64::INFINITY)], 0.0), "atrim=end=1.000000,asetpts=PTS-STARTPTS");
+        assert_eq!(
+            keep_audio_filter(&[(0.2, 0.6)], 0.0),
+            "asplit=2[k0][k1];[k0]atrim=end=0.200000,asetpts=PTS-STARTPTS[s0];\
+             [k1]atrim=start=0.600000,asetpts=PTS-STARTPTS[s1];[s0][s1]concat=n=2:v=0:a=1"
+        );
+        assert_eq!(
+            keep_audio_filter(&[(0.0, 1.0), (2.0, 3.0), (4.0, f64::INFINITY)], 0.5),
+            "asplit=2[k0][k1];[k0]atrim=start=1.500000:end=2.500000,asetpts=PTS-STARTPTS[s0];\
+             [k1]atrim=start=3.500000:end=4.500000,asetpts=PTS-STARTPTS[s1];[s0][s1]concat=n=2:v=0:a=1"
+        );
     }
 }
