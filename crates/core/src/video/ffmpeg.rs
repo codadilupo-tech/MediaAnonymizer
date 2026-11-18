@@ -26,7 +26,25 @@ fn locate(name: &str, env: &str) -> PathBuf {
         .chain(on_path.map(|d| d.join(&file)))
         .chain(well_known_dirs().into_iter().map(|d| d.join(&file)))
         .find(|p| p.is_file())
+        .map(|p| if cfg!(windows) { scoop_shim_target(&p).unwrap_or(p) } else { p })
         .unwrap_or_else(|| PathBuf::from(file))
+}
+
+/// The executable a Scoop shim starts, read from the `<name>.shim` file next
+/// to it (`path = "C:\...\ffprobe.exe"`).
+///
+/// Scoop puts small launcher executables in `scoop\shims`. Running FFmpeg
+/// through them adds a process in between, and they can fail where the real
+/// executable works ("Shim: Could not create process with command ..."), so
+/// the real one is run directly.
+fn scoop_shim_target(exe: &Path) -> Option<PathBuf> {
+    let text = std::fs::read_to_string(exe.with_extension("shim")).ok()?;
+    let target = text.trim_start_matches('\u{feff}').lines().find_map(|line| {
+        let (key, value) = line.split_once('=')?;
+        (key.trim() == "path").then(|| value.trim().trim_matches('"').trim())
+    })?;
+    let target = PathBuf::from(target);
+    target.is_file().then_some(target)
 }
 
 /// Usual FFmpeg install directories per platform.
@@ -46,8 +64,17 @@ fn well_known_dirs() -> Vec<PathBuf> {
         if let Some(choco) = var("ChocolateyInstall") {
             dirs.push(choco.join("bin"));
         }
-        if let Some(home) = var("USERPROFILE") {
-            dirs.push(home.join("scoop").join("shims"));
+        // Scoop: the real executables first (`$SCOOP` is a custom install
+        // root), then the shims (followed by `scoop_shim_target`).
+        let scoop = var("SCOOP").or_else(|| var("USERPROFILE").map(|h| h.join("scoop")));
+        if let Some(scoop) = &scoop {
+            dirs.push(scoop.join("apps").join("ffmpeg").join("current").join("bin"));
+        }
+        if let Some(global) = var("SCOOP_GLOBAL").or_else(|| var("ProgramData").map(|d| d.join("scoop"))) {
+            dirs.push(global.join("apps").join("ffmpeg").join("current").join("bin"));
+        }
+        if let Some(scoop) = scoop {
+            dirs.push(scoop.join("shims"));
         }
         dirs.push(PathBuf::from(r"C:\ffmpeg\bin"));
     } else {
@@ -220,4 +247,29 @@ fn query_capabilities() -> Result<Capabilities> {
         })
         .collect();
     Ok(Capabilities { version, hwaccels, encoders })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::scoop_shim_target;
+
+    #[test]
+    fn scoop_shims_are_followed_to_the_real_executable() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("apps").join("ffprobe.exe");
+        std::fs::create_dir_all(real.parent().unwrap()).unwrap();
+        std::fs::write(&real, b"").unwrap();
+        let shim = dir.path().join("ffprobe.exe");
+        std::fs::write(&shim, b"").unwrap();
+
+        // No .shim file: not a Scoop shim.
+        assert_eq!(scoop_shim_target(&shim), None);
+        // Scoop's format, with a UTF-8 BOM and CRLF line endings.
+        let text = format!("\u{feff}path = \"{}\"\r\nargs = -hide_banner\r\n", real.display());
+        std::fs::write(dir.path().join("ffprobe.shim"), text).unwrap();
+        assert_eq!(scoop_shim_target(&shim), Some(real.clone()));
+        // A shim pointing to a missing file is ignored.
+        std::fs::remove_file(&real).unwrap();
+        assert_eq!(scoop_shim_target(&shim), None);
+    }
 }

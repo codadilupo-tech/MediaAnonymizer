@@ -12,6 +12,10 @@ All notable changes are documented here. The format follows
   `aselect`. The cut audio is now sample-accurate, and it is trimmed at all
   with FFmpeg builds whose `aselect` passes every frame through (Ubuntu
   26.04's FFmpeg 8.0.1, used by the `ubuntu-latest` CI runner).
+- Windows: FFmpeg installed with Scoop is run directly (the executable named
+  in the shim's `.shim` file, or `scoop\apps\ffmpeg\current\bin`) instead of
+  through Scoop's launcher, which could fail with "Shim: Could not create
+  process" and made videos unreadable (#5).
 
 ### Changed
 
